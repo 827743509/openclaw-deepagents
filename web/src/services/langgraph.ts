@@ -1,6 +1,4 @@
-import { Client } from "@langchain/langgraph-sdk";
-
-export type AgentId = "supervisor" | "text_to_sql_agent" | "default_agent";
+export type ThreadId = string;
 
 export type ToolCallStatus = "running" | "done" | "error";
 
@@ -17,6 +15,7 @@ export type StreamProgress = {
 };
 
 export type StreamCallbacks = {
+  onThreadId?: (threadId: ThreadId) => void;
   onToolCall: (toolCall: ToolCallProgress) => void;
   onProgress: (progress: StreamProgress) => void;
   onFinal: (content: string) => void;
@@ -24,11 +23,34 @@ export type StreamCallbacks = {
   onError: (message: string) => void;
 };
 
-const apiUrl = import.meta.env.VITE_LANGGRAPH_API_URL || "http://127.0.0.1:2024";
+export type ChatHistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
 
-const client = new Client({
-  apiUrl,
-});
+export type ChatHistory = {
+  thread_id: ThreadId;
+  messages: ChatHistoryMessage[];
+};
+
+export type ChatSummary = {
+  thread_id: ThreadId;
+  title: string;
+  message_count: number;
+  last_message: ChatHistoryMessage | null;
+  updated_at: number;
+};
+
+export type SkillSummary = {
+  id: string;
+  name: string;
+  description: string;
+  skill_path: string;
+  body?: string | null;
+  metadata: Record<string, unknown>;
+};
+
+const apiUrl = import.meta.env.VITE_SSW_API_URL || "http://127.0.0.1:8000";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
@@ -174,8 +196,8 @@ function iterUpdateMessages(chunk: unknown): Array<{ node?: string; message: unk
   return messages;
 }
 
-export async function streamAgentAnswer(
-  agentId: AgentId,
+export async function streamChatAnswer(
+  threadId: ThreadId | null,
   question: string,
   signal: AbortSignal,
   callbacks: StreamCallbacks,
@@ -240,16 +262,26 @@ export async function streamAgentAnswer(
   try {
     callbacks.onProgress({ detail: "模型正在处理" });
 
-    const stream = client.runs.stream(null, agentId, {
-      input: {
-        messages: [{ role: "user", content: context ? `${context}\n\n用户问题：${question}` : question }],
+    const response = await fetch(`${apiUrl}/chat/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
       },
-      streamMode: ["messages-tuple", "updates"],
-      streamSubgraphs: true,
+      body: JSON.stringify({ thread_id: threadId, question, context }),
       signal,
     });
 
-    for await (const chunk of stream) {
+    if (!response.ok || !response.body) {
+      const detail = await response.text();
+      throw new Error(detail || `流式请求失败：${response.status}`);
+    }
+
+    const responseThreadId = response.headers.get("X-Thread-Id");
+    if (responseThreadId) {
+      callbacks.onThreadId?.(responseThreadId);
+    }
+
+    for await (const chunk of readEventStream(response.body)) {
       if (signal.aborted) {
         break;
       }
@@ -286,4 +318,111 @@ export async function streamAgentAnswer(
 
 export function getLangGraphApiUrl(): string {
   return apiUrl;
+}
+
+export async function getChatHistory(threadId: ThreadId): Promise<ChatHistory> {
+  const response = await fetch(`${apiUrl}/chat/${threadId}/history`);
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `加载会话历史失败：${response.status}`);
+  }
+  return (await response.json()) as ChatHistory;
+}
+
+export async function listRecentChats(limit = 10): Promise<ChatSummary[]> {
+  const response = await fetch(`${apiUrl}/chat?limit=${limit}`);
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `加载最近会话失败：${response.status}`);
+  }
+  return (await response.json()) as ChatSummary[];
+}
+
+export async function listSkills(): Promise<SkillSummary[]> {
+  const response = await fetch(`${apiUrl}/skills`);
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `加载技能失败：${response.status}`);
+  }
+  return (await response.json()) as SkillSummary[];
+}
+
+export async function deleteChat(threadId: ThreadId): Promise<void> {
+  const response = await fetch(`${apiUrl}/chat/${threadId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `删除会话失败：${response.status}`);
+  }
+}
+
+async function* readEventStream(stream: ReadableStream<Uint8Array>): AsyncGenerator<unknown> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() ?? "";
+      for (const eventText of events) {
+        const event = parseServerSentEvent(eventText);
+        if (event) {
+          yield event;
+        }
+      }
+    }
+
+    buffer += decoder.decode();
+    const finalEvent = parseServerSentEvent(buffer);
+    if (finalEvent) {
+      yield finalEvent;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function parseServerSentEvent(eventText: string): unknown | null {
+  const lines = eventText.split(/\r?\n/);
+  let event = "";
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+
+  if (!dataLines.length) {
+    return null;
+  }
+
+  const dataText = dataLines.join("\n");
+  if (dataText === "[DONE]") {
+    return null;
+  }
+
+  try {
+    return {
+      event,
+      data: JSON.parse(dataText),
+    };
+  } catch {
+    return {
+      event,
+      data: dataText,
+    };
+  }
 }

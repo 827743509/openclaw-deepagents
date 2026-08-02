@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from deepagents import CompiledSubAgent, create_deep_agent
+from deepagents import CompiledSubAgent, create_deep_agent, AsyncSubAgent
 from deepagents.backends.filesystem import FilesystemBackend
 
+from ssw.config import SSW_AGENT_PROTOCOL_URL, SSW_WORKSPACE
 from ssw.llm import build_llm
 from ssw.subagents.text_to_sql.tool import validate_select_sql
-
-REPO_ROOT = Path(__file__).resolve().parents[4]
-SKILLS_PATH = "/src/ssw/subagents/text_to_sql/skills"
+workspace = Path(SSW_WORKSPACE).resolve()
+SKILLS_PATH = workspace/"skills/text_to_sql"
 
 
 SYSTEM_PROMPT = """
@@ -35,20 +35,35 @@ SQL 规范：
 - 对可能重复的业务实体，优先使用 COUNT(DISTINCT ...)。
 """
 
-text_to_sql_agent = create_deep_agent(
+agent = create_deep_agent(
     model=build_llm(),
     tools=[validate_select_sql],
     system_prompt=SYSTEM_PROMPT,
-    skills=[SKILLS_PATH],
-    backend=FilesystemBackend(root_dir=REPO_ROOT, virtual_mode=True),
+    skills=[str(SKILLS_PATH)],
+    backend=FilesystemBackend(root_dir=str(workspace), virtual_mode=True),
     name="text-to-sql-agent",
 )
 
-text_to_sql_subagent: CompiledSubAgent = {
-    "name": "text-to-sql",
-    "description": (
-        "将自然语言问题转换为 SQL 查询语句。适合需要从子 Agent skills 读取数据源、表结构、"
-        "生成 SELECT/CTE 查询、解释查询逻辑和校验 SQL 安全性的任务。"
-    ),
-    "runnable": text_to_sql_agent,
-}
+text_to_sql_subagent:AsyncSubAgent=AsyncSubAgent(
+    name="text_to_sql",
+    description="""
+    专门负责将用户的数据查询需求转换为可执行的 SQL 查询语句。
+
+    当用户需要从数据库中查询、统计、分析数据时调用此 Agent。
+    输入通常是自然语言描述的数据需求，例如：
+    - 根据条件筛选数据
+    - 分组统计、聚合分析
+    - 多表关联查询
+    - 根据业务指标生成查询 SQL
+
+    该 Agent 会理解业务含义，选择合适的数据表和字段，并生成 SELECT 类型 SQL。
+    输出内容包括 SQL 查询语句以及必要的查询说明。
+
+    不处理：
+    - 数据写入、更新、删除操作（INSERT/UPDATE/DELETE）
+    - 数据库结构设计
+    - 非数据库相关的问题
+    """,
+    graph_id="text_to_sql",
+    url=SSW_AGENT_PROTOCOL_URL
+)

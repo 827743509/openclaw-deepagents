@@ -32,7 +32,7 @@ export type GeneratedSkill = {
   column_count: number;
 };
 
-const apiUrl = import.meta.env.VITE_LANGGRAPH_API_URL || "http://127.0.0.1:2024";
+const apiUrl = import.meta.env.VITE_SSW_API_URL || "http://127.0.0.1:8000";
 
 export async function listDataSources(): Promise<DataSourceSummary[]> {
   const response = await fetch(`${apiUrl}/database/datasources`);

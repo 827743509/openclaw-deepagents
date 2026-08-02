@@ -10,13 +10,13 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 
+from ssw.config import SSW_WORKSPACE
 from ssw.llm import build_llm
-
 routerDataBase = APIRouter(prefix="/database", tags=["数据库管理"])
-
+workspace = Path(SSW_WORKSPACE).resolve()
 DataSourceType = Literal["mysql", "clickhouse"]
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SKILLS_ROOT = Path(__file__).resolve().parents[1] / "subagents" / "text_to_sql" / "skills"
+SKILLS_ROOT = workspace / "skills" / "text_to_sql"
 
 
 class DataSourceConnection(BaseModel):

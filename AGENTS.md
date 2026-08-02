@@ -25,7 +25,7 @@ langgraph dev
 ### 使用 4 个空格缩进、类型提示和显式导入。保持模块精简，并将包代码放在 `src/ssw` 内。函数、变量和模块名使用 `snake_case`；类和 Pydantic 模型使用 `PascalCase`。新增基于环境变量的设置时，请添加到 `src/ssw/config.py` 的 `Settings` 中，并使用清晰的别名，例如 `SSW_MODEL`。
 ### 生成的所有skills的md文件需要有YAML frontmatter 
 ### 后端封装流式事件，前端等待期间只显示“工具名 + 状态”，最终回答完成后一次性显示。
-### 同步阻塞方法使用await asyncio.to_thread(...)
+### 业务接口严格按照Api->Service->Repository 无数据层可以省略Repository  用 Depends + dependency.py 统一组装 Service和Repository对象默认单例使用@lru_cache 
 
 ## 子agent创建规范
 ### 创建一新的子agent时,需要在 `src/ssw/subagents` 下创建一个子agent目录。改目录包含skills(子agent特有的技能)和tool(子agent特有的工具) 并且需要在langgraph.json下面注册

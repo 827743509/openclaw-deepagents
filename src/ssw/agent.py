@@ -1,55 +1,40 @@
 from __future__ import annotations
-
 from pathlib import Path
+from deepagents.backends import LocalShellBackend
 from ssw.llm import build_llm
 from deepagents import (
-    GeneralPurposeSubagentProfile,
-    HarnessProfile,
     create_deep_agent,
-    register_harness_profile, AsyncSubAgent,
 )
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-
-from ssw.config import get_settings
-
-
+from ssw.config import REDIS_URL, SSW_WORKSPACE
 from ssw.subagents.text_to_sql import text_to_sql_subagent
 
-
-load_dotenv()
-
 SYSTEM_PROMPT = """
-    你是一个主控规划 Agent，负责拆解任务、制定计划、分发子任务并汇总结论。
-    你只做三类事情：
-    1. 使用 write_todos 维护任务计划；
-    2. 使用 task 把子任务分发给合适的子 Agent；
-    3. 根据子 Agent 返回的结果，汇总成最终答案。
-    4. 将用户问题翻译成调用子任务的参数
-    规则：
-    - 复杂任务必须先规划，再分发。
-    - 不要自己执行专业任务，优先交给对应子 Agent。
-    - 不要读写文件。
-    - 不要使用命令行。
-    - 子 Agent 返回结果后，你负责判断是否还需要继续分发或汇总。
-    - 生成SQL相关任务直接调用text-to-sql不要拆解任务。
+      你是一个企业级多功能智能体（Multi-Agent Assistant），负责理解用户需求、规划任务、选择合适技能并完成复杂工作。
+      你的核心职责：
+      1. 理解用户意图
+      2. 分析任务类型
+      3. 选择最合适的技能（Skill）
+      4. 调用工具完成任务
     """
 
-settings = get_settings()
-
-workspace = Path(settings.ssw_workspace).resolve()
-data_dir  = Path(settings.ssw_data_dir).resolve()
-workspace.mkdir(parents=True, exist_ok=True)
-data_dir.mkdir(parents=True, exist_ok=True)
-
+workspace = Path(SSW_WORKSPACE).resolve()
+SKILLS_PATH = workspace / "skills/main"
+SKILLS_PATH.mkdir(parents=True, exist_ok=True)
+# redis短期记忆
 # ttl_config = {
-#     "default_ttl": 60 * 24 * 7,  # 7 天，单位为分钟
+#     "default_ttl": 60 * 24 * 7,
 #     "refresh_on_read": True,
 # }
+#
+# try:
+#     _checkpointer_cm = RedisSaver.from_conn_string(REDIS_URL, ttl=ttl_config)
+#     checkpointer = _checkpointer_cm.__enter__()
+#     checkpointer.setup()
+# except Exception as exc:
+#     print(f"Redis 检查点初始化失败，降级为进程内会话存储：{exc}", flush=True)
+#     checkpointer = InMemorySaver()
 
-# _checkpointer_cm = RedisSaver.from_conn_string(settings.redis_url, ttl=ttl_config)
-# checkpointer = _checkpointer_cm.__enter__()
-# checkpointer.setup()
+
 
 tools = []
 
@@ -60,15 +45,18 @@ subagents = [
 llm =build_llm()
 
 
-agent = create_deep_agent(
+
+def create_chat_agent(checkpoint):
+    return  create_deep_agent(
     model=llm,
     tools=tools,
     system_prompt=SYSTEM_PROMPT,
-    skills=[],
+    skills=[str(SKILLS_PATH)],
     subagents=subagents,
     interrupt_on={
     },
-    # checkpointer=checkpointer,
+    checkpointer=checkpoint,
+    backend=LocalShellBackend(root_dir=str(workspace), virtual_mode=True),
     name="ssw-agent",
 )
 

@@ -1,43 +1,29 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import {
   Bot,
   CheckCircle2,
+  ChevronDown,
   CircleStop,
-  Database,
-  Download,
   LoaderCircle,
-  Plus,
   RotateCcw,
-  Save,
   Send,
-  Server,
-  Sparkles,
-  Trash2,
-  Upload,
-  Workflow,
   Wrench,
-  X,
-  Zap,
 } from "@lucide/vue";
-import mascotUrl from "./assets/assistant-mascot.png";
+import AppSidebar, { type SidebarView } from "./components/AppSidebar.vue";
+import DataSourceManager from "./components/DataSourceManager.vue";
 import {
-  type AgentId,
+  type ChatSummary,
+  type SkillSummary,
+  type ThreadId,
   type ToolCallProgress,
+  deleteChat,
   getLangGraphApiUrl,
-  streamAgentAnswer,
+  getChatHistory,
+  listRecentChats,
+  listSkills,
+  streamChatAnswer,
 } from "./services/langgraph";
-import {
-  type DataSourceCreate,
-  type DataSourceSummary,
-  type DataSourceType,
-  createDataSource,
-  deleteDataSource,
-  downloadDataSourceSkill,
-  generateDataSourceSkill,
-  listDataSources,
-  replaceDataSourceSkill,
-} from "./services/datasources";
 
 type ChatRole = "user" | "assistant";
 
@@ -45,293 +31,76 @@ type ChatMessage = {
   id: string;
   role: ChatRole;
   content: string;
-  agent?: AgentId;
+  thread?: ThreadId;
   status?: "streaming" | "done" | "error" | "stopped";
   toolCalls?: ToolCallProgress[];
 };
 
-const agents: Array<{
-  id: AgentId;
-  label: string;
-  caption: string;
-  icon: typeof Workflow;
-}> = [
-  {
-    id: "supervisor",
-    label: "Supervisor",
-    caption: "任务规划与分发",
-    icon: Workflow,
-  },
-  {
-    id: "text_to_sql_agent",
-    label: "Text to SQL",
-    caption: "自然语言生成 SQL",
-    icon: Database,
-  },
-  {
-    id: "default_agent",
-    label: "Default Agent",
-    caption: "通用技能问答",
-    icon: Bot,
-  },
-];
-
-const selectedAgent = ref<AgentId>("supervisor");
+const mainChatLabel = "SSW Agent";
+const activeView = ref<SidebarView>("chat");
+const currentThreadId = ref<ThreadId | null>(localStorage.getItem("ssw.currentThreadId"));
 const inputText = ref("");
 const isStreaming = ref(false);
+const isLoadingThreads = ref(false);
+const isLoadingSkills = ref(false);
 const progressText = ref("待命中");
+const threadError = ref("");
+const skillError = ref("");
+const skillSearchText = ref("");
+const isSkillPickerOpen = ref(false);
+const recentThreads = ref<ChatSummary[]>([]);
+const skills = ref<SkillSummary[]>([]);
+const selectedSkillIds = ref<string[]>(
+  JSON.parse(localStorage.getItem("ssw.selectedSkillIds") || "[]") as string[],
+);
 const messages = ref<ChatMessage[]>([
   {
     id: crypto.randomUUID(),
     role: "assistant",
-    agent: "supervisor",
-    content: "你好，我是 SSW Agent。选择一个智能体后直接提问，我会在等待时展示工具调用过程，并在完成后输出最终回答。",
+    content: "你好，我是 SSW Agent。直接提问即可，我会在等待时展示工具调用过程，并在完成后输出最终回答。",
     status: "done",
   },
 ]);
 
-const dataSources = ref<DataSourceSummary[]>([]);
-const selectedDataSourceId = ref(localStorage.getItem("ssw.selectedDataSource") || "");
-const isLoadingDataSources = ref(false);
-const isSavingDataSource = ref(false);
-const isGeneratingSkill = ref(false);
-const isReplacingSkill = ref(false);
-const isDeletingDataSource = ref(false);
-const showDataSourceForm = ref(false);
-const dataSourceError = ref("");
-const dataSourceForm = ref<DataSourceCreate>({
-  name: "",
-  type: "mysql",
-  host: "127.0.0.1",
-  port: 3306,
-  database: "",
-  username: "",
-  password: "",
-  skill_body: "",
-});
-
 const scrollRef = ref<HTMLElement | null>(null);
-const skillUploadInputRef = ref<HTMLInputElement | null>(null);
 const abortController = ref<AbortController | null>(null);
 
-const activeAgent = computed(() => agents.find((agent) => agent.id === selectedAgent.value) ?? agents[0]);
-const selectedDataSource = computed(() => (
-  dataSources.value.find((source) => source.id === selectedDataSourceId.value) ?? null
+const datasourceView = computed(() => (
+  activeView.value === "datasource-create" ? "datasource-create" : "datasource-list"
 ));
+
 const canSend = computed(() => {
-  if (!inputText.value.trim() || isStreaming.value) {
-    return false;
-  }
-
-  return selectedAgent.value !== "text_to_sql_agent" || Boolean(selectedDataSource.value);
-});
-const canGenerateSkill = computed(() => (
-  Boolean(dataSourceForm.value.name.trim())
-  && Boolean(dataSourceForm.value.host.trim())
-  && Boolean(dataSourceForm.value.database.trim())
-  && Boolean(dataSourceForm.value.username.trim())
-  && dataSourceForm.value.port > 0
-  && !isGeneratingSkill.value
-));
-const canSaveDataSource = computed(() => (
-  Boolean(dataSourceForm.value.skill_body.trim())
-  && !isSavingDataSource.value
-  && !isGeneratingSkill.value
-));
-
-watch(selectedDataSourceId, (value) => {
-  if (value) {
-    localStorage.setItem("ssw.selectedDataSource", value);
-  } else {
-    localStorage.removeItem("ssw.selectedDataSource");
-  }
+  return Boolean(inputText.value.trim()) && !isStreaming.value;
 });
 
-watch(() => dataSourceForm.value.type, (type) => {
-  dataSourceForm.value.port = type === "mysql" ? 3306 : 8123;
+const selectedSkills = computed(() => (
+  selectedSkillIds.value
+    .map((skillId) => skills.value.find((skill) => skill.id === skillId))
+    .filter((skill): skill is SkillSummary => Boolean(skill))
+));
+
+const filteredSkills = computed(() => {
+  const keyword = skillSearchText.value.trim().toLowerCase();
+  if (!keyword) {
+    return skills.value;
+  }
+
+  return skills.value.filter((skill) => (
+    skill.name.toLowerCase().includes(keyword)
+    || skill.description.toLowerCase().includes(keyword)
+  ));
 });
 
 onMounted(() => {
-  void refreshDataSources();
+  void refreshRecentThreads();
+  void refreshSkills();
+  if (currentThreadId.value) {
+    void loadThread(currentThreadId.value);
+  }
 });
 
-function agentLabel(agentId?: AgentId): string {
-  return agents.find((agent) => agent.id === agentId)?.label ?? "SSW Agent";
-}
-
-function dataSourceTypeLabel(type: DataSourceType): string {
-  return type === "mysql" ? "MySQL" : "ClickHouse";
-}
-
-function buildTextToSqlContext(): string | undefined {
-  if (selectedAgent.value !== "text_to_sql_agent" || !selectedDataSource.value) {
-    return undefined;
-  }
-
-  const source = selectedDataSource.value;
-  return [
-    "当前 Text to SQL 数据源：",
-    `- 名称：${source.name}`,
-    `- 类型：${dataSourceTypeLabel(source.type)}`,
-    `- Host：${source.host}`,
-    `- Port：${source.port}`,
-    `- Database：${source.database}`,
-    `- Skill：${source.skill_path}`,
-    "",
-    `请优先读取并使用该数据源对应的 skill 文档，生成 ${dataSourceTypeLabel(source.type)} 方言的只读查询 SQL。`,
-  ].join("\n");
-}
-
-async function refreshDataSources(): Promise<void> {
-  isLoadingDataSources.value = true;
-  dataSourceError.value = "";
-
-  try {
-    dataSources.value = await listDataSources();
-    if (selectedDataSourceId.value && !selectedDataSource.value) {
-      selectedDataSourceId.value = "";
-    }
-    if (!selectedDataSourceId.value && dataSources.value.length) {
-      selectedDataSourceId.value = dataSources.value[0].id;
-    }
-  } catch (error) {
-    dataSourceError.value = error instanceof Error ? error.message : "加载数据源失败";
-  } finally {
-    isLoadingDataSources.value = false;
-  }
-}
-
-function resetDataSourceForm(): void {
-  dataSourceForm.value = {
-    name: "",
-    type: "mysql",
-    host: "127.0.0.1",
-    port: 3306,
-    database: "",
-    username: "",
-    password: "",
-    skill_body: "",
-  };
-  dataSourceError.value = "";
-}
-
-async function generateSkill(): Promise<void> {
-  dataSourceError.value = "";
-  isGeneratingSkill.value = true;
-
-  try {
-    const generated = await generateDataSourceSkill({
-      name: dataSourceForm.value.name,
-      type: dataSourceForm.value.type,
-      host: dataSourceForm.value.host,
-      port: dataSourceForm.value.port,
-      database: dataSourceForm.value.database,
-      username: dataSourceForm.value.username,
-      password: dataSourceForm.value.password,
-    });
-    dataSourceForm.value.skill_body = generated.skill_body;
-    dataSourceError.value = `已生成 ${generated.table_count} 张表、${generated.column_count} 个字段的 Skill 文档，可继续编辑。`;
-  } catch (error) {
-    dataSourceError.value = error instanceof Error ? error.message : "生成 Skill 失败";
-  } finally {
-    isGeneratingSkill.value = false;
-  }
-}
-
-async function saveDataSource(): Promise<void> {
-  dataSourceError.value = "";
-  isSavingDataSource.value = true;
-
-  try {
-    const created = await createDataSource(dataSourceForm.value);
-    dataSources.value = [
-      ...dataSources.value.filter((source) => source.id !== created.id),
-      created,
-    ];
-    selectedDataSourceId.value = created.id;
-    showDataSourceForm.value = false;
-    resetDataSourceForm();
-  } catch (error) {
-    dataSourceError.value = error instanceof Error ? error.message : "创建数据源失败";
-  } finally {
-    isSavingDataSource.value = false;
-  }
-}
-
-async function downloadSelectedDataSourceSkill(): Promise<void> {
-  if (!selectedDataSource.value) {
-    return;
-  }
-
-  dataSourceError.value = "";
-  try {
-    const source = selectedDataSource.value;
-    const blob = await downloadDataSourceSkill(source.id);
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${source.id}-SKILL.md`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  } catch (error) {
-    dataSourceError.value = error instanceof Error ? error.message : "下载 Skill 失败";
-  }
-}
-
-function openSkillUploadPicker(): void {
-  skillUploadInputRef.value?.click();
-}
-
-async function replaceSelectedDataSourceSkill(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file || !selectedDataSource.value) {
-    input.value = "";
-    return;
-  }
-
-  dataSourceError.value = "";
-  isReplacingSkill.value = true;
-  try {
-    const updated = await replaceDataSourceSkill(selectedDataSource.value.id, file);
-    dataSources.value = dataSources.value.map((source) => (
-      source.id === updated.id ? updated : source
-    ));
-    selectedDataSourceId.value = updated.id;
-    dataSourceError.value = "已替换当前数据源的 Skill 文档。";
-  } catch (error) {
-    dataSourceError.value = error instanceof Error ? error.message : "替换 Skill 失败";
-  } finally {
-    isReplacingSkill.value = false;
-    input.value = "";
-  }
-}
-
-async function deleteSelectedDataSource(): Promise<void> {
-  if (!selectedDataSource.value || isDeletingDataSource.value) {
-    return;
-  }
-
-  const source = selectedDataSource.value;
-  if (!window.confirm(`确认删除数据源「${source.name}」？该操作会删除对应的 SKILL.md 文件。`)) {
-    return;
-  }
-
-  dataSourceError.value = "";
-  isDeletingDataSource.value = true;
-  try {
-    await deleteDataSource(source.id);
-    const remaining = dataSources.value.filter((item) => item.id !== source.id);
-    dataSources.value = remaining;
-    selectedDataSourceId.value = remaining[0]?.id ?? "";
-    dataSourceError.value = "已删除数据源。";
-  } catch (error) {
-    dataSourceError.value = error instanceof Error ? error.message : "删除数据源失败";
-  } finally {
-    isDeletingDataSource.value = false;
-  }
+function chatLabel(_threadId?: ThreadId): string {
+  return mainChatLabel;
 }
 
 async function scrollToBottom(): Promise<void> {
@@ -342,13 +111,133 @@ async function scrollToBottom(): Promise<void> {
   }
 }
 
-function resetChat(): void {
+function mapHistoryMessages(history: Awaited<ReturnType<typeof getChatHistory>>): ChatMessage[] {
+  if (!history.messages.length) {
+    return [];
+  }
+
+  return history.messages.map((message) => ({
+    id: crypto.randomUUID(),
+    role: message.role,
+    content: message.content,
+    thread: history.thread_id,
+    status: "done",
+  }));
+}
+
+async function refreshRecentThreads(): Promise<void> {
+  isLoadingThreads.value = true;
+  threadError.value = "";
+  try {
+    recentThreads.value = await listRecentChats(10);
+  } catch (error) {
+    threadError.value = error instanceof Error ? error.message : "加载最近会话失败";
+  } finally {
+    isLoadingThreads.value = false;
+  }
+}
+
+async function refreshSkills(): Promise<void> {
+  isLoadingSkills.value = true;
+  skillError.value = "";
+  try {
+    skills.value = await listSkills();
+    const availableIds = new Set(skills.value.map((skill) => skill.id));
+    selectedSkillIds.value = selectedSkillIds.value.filter((skillId) => availableIds.has(skillId));
+    persistSelectedSkills();
+  } catch (error) {
+    skillError.value = error instanceof Error ? error.message : "加载技能失败";
+  } finally {
+    isLoadingSkills.value = false;
+  }
+}
+
+function persistSelectedSkills(): void {
+  localStorage.setItem("ssw.selectedSkillIds", JSON.stringify(selectedSkillIds.value));
+}
+
+function toggleSkill(skillId: string): void {
+  if (selectedSkillIds.value.includes(skillId)) {
+    selectedSkillIds.value = selectedSkillIds.value.filter((item) => item !== skillId);
+  } else {
+    selectedSkillIds.value = [...selectedSkillIds.value, skillId];
+  }
+  persistSelectedSkills();
+}
+
+function removeSkill(skillId: string): void {
+  selectedSkillIds.value = selectedSkillIds.value.filter((item) => item !== skillId);
+  persistSelectedSkills();
+}
+
+function buildSkillContext(): string | undefined {
+  if (!selectedSkills.value.length) {
+    return undefined;
+  }
+
+  return [
+    "用户在前端选择了以下技能，请优先结合这些技能的用途回答：",
+    ...selectedSkills.value.map((skill) => `- ${skill.name}: ${skill.description}`),
+  ].join("\n");
+}
+
+async function loadThread(threadId: ThreadId): Promise<void> {
+  if (isStreaming.value) {
+    return;
+  }
+
+  threadError.value = "";
+  try {
+    const history = await getChatHistory(threadId);
+    currentThreadId.value = history.thread_id;
+    localStorage.setItem("ssw.currentThreadId", history.thread_id);
+    messages.value = mapHistoryMessages(history);
+    if (!messages.value.length) {
+      messages.value = [];
+    }
+    progressText.value = "会话已加载";
+    await scrollToBottom();
+  } catch (error) {
+    threadError.value = error instanceof Error ? error.message : "加载会话失败";
+  }
+}
+
+async function resetChat(): Promise<void> {
   if (isStreaming.value) {
     stopStreaming();
   }
 
+  if (currentThreadId.value) {
+    try {
+      await deleteChat(currentThreadId.value);
+    } catch {
+      progressText.value = "删除会话失败";
+      return;
+    }
+    localStorage.removeItem("ssw.currentThreadId");
+    currentThreadId.value = null;
+  }
+
   messages.value = [];
+  await refreshRecentThreads();
   progressText.value = "已清空";
+}
+
+async function startNewChat(): Promise<void> {
+  if (isStreaming.value) {
+    stopStreaming();
+  }
+
+  localStorage.removeItem("ssw.currentThreadId");
+  currentThreadId.value = null;
+  activeView.value = "chat";
+  messages.value = [];
+  progressText.value = "新聊天已就绪";
+  await refreshRecentThreads();
+}
+
+function navigateView(view: SidebarView): void {
+  activeView.value = view;
 }
 
 function upsertToolCall(message: ChatMessage, toolCall: ToolCallProgress): void {
@@ -385,23 +274,10 @@ async function sendMessage(): Promise<void> {
     return;
   }
 
-  if (selectedAgent.value === "text_to_sql_agent" && !selectedDataSource.value) {
-    messages.value.push({
-      id: crypto.randomUUID(),
-      role: "assistant",
-      agent: "text_to_sql_agent",
-      content: "请先在左侧添加并选择一个数据源。",
-      status: "error",
-    });
-    await scrollToBottom();
-    return;
-  }
-
-  const agentId = selectedAgent.value;
   const assistantMessage: ChatMessage = {
     id: crypto.randomUUID(),
     role: "assistant",
-    agent: agentId,
+    thread: currentThreadId.value ?? undefined,
     content: "",
     status: "streaming",
     toolCalls: [],
@@ -417,11 +293,17 @@ async function sendMessage(): Promise<void> {
 
   inputText.value = "";
   isStreaming.value = true;
-  progressText.value = `${agentLabel(agentId)} 正在处理`;
+  progressText.value = `${chatLabel(currentThreadId.value ?? undefined)} 正在处理`;
   abortController.value = new AbortController();
   await scrollToBottom();
 
-  await streamAgentAnswer(agentId, question, abortController.value.signal, {
+  await streamChatAnswer(currentThreadId.value, question, abortController.value.signal, {
+    onThreadId(createdThreadId) {
+      currentThreadId.value = createdThreadId;
+      assistantMessage.thread = createdThreadId;
+      localStorage.setItem("ssw.currentThreadId", createdThreadId);
+      void refreshRecentThreads();
+    },
     onToolCall(toolCall) {
       upsertToolCall(assistantMessage, toolCall);
       void scrollToBottom();
@@ -442,6 +324,7 @@ async function sendMessage(): Promise<void> {
       isStreaming.value = false;
       progressText.value = "回复完成";
       abortController.value = null;
+      void refreshRecentThreads();
       void scrollToBottom();
     },
     onError(message) {
@@ -452,9 +335,10 @@ async function sendMessage(): Promise<void> {
       isStreaming.value = false;
       progressText.value = "请求失败";
       abortController.value = null;
+      void refreshRecentThreads();
       void scrollToBottom();
     },
-  }, buildTextToSqlContext());
+  }, buildSkillContext());
 }
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -466,178 +350,28 @@ function handleKeydown(event: KeyboardEvent): void {
 
 <template>
   <main class="app-shell">
-    <section class="sidebar" aria-label="智能体控制台">
-      <div class="brand">
-        <div class="brand-mark">
-          <Sparkles :size="22" />
-        </div>
-        <div>
-          <p class="eyebrow">SSW Agent</p>
-          <h1>盐汽水问答终端</h1>
-        </div>
-      </div>
+    <AppSidebar
+      :active-view="activeView"
+      :current-thread-id="currentThreadId"
+      :is-loading-threads="isLoadingThreads"
+      :is-streaming="isStreaming"
+      :progress-text="progressText"
+      :api-url="getLangGraphApiUrl()"
+      :recent-threads="recentThreads"
+      :thread-error="threadError"
+      @new-chat="startNewChat"
+      @navigate="navigateView"
+      @load-thread="loadThread"
+      @refresh-history="refreshRecentThreads"
+    />
 
-      <div class="mascot-panel">
-        <img :src="mascotUrl" alt="SSW Agent 助手形象" />
-      </div>
-
-      <div class="agent-panel">
-        <p class="panel-title">选择智能体</p>
-        <div class="agent-list">
-          <button
-            v-for="agent in agents"
-            :key="agent.id"
-            class="agent-option"
-            :class="{ active: selectedAgent === agent.id }"
-            type="button"
-            @click="selectedAgent = agent.id"
-          >
-            <component :is="agent.icon" :size="19" />
-            <span>
-              <strong>{{ agent.label }}</strong>
-              <small>{{ agent.caption }}</small>
-            </span>
-          </button>
-        </div>
-      </div>
-
-      <section v-if="selectedAgent === 'text_to_sql_agent'" class="datasource-panel">
-        <div class="panel-heading">
-          <p class="panel-title">数据源</p>
-          <button
-            class="mini-icon-button"
-            type="button"
-            title="添加数据源"
-            @click="showDataSourceForm = !showDataSourceForm"
-          >
-            <X v-if="showDataSourceForm" :size="16" />
-            <Plus v-else :size="16" />
-          </button>
-        </div>
-
-        <label class="field-label">
-          <span>当前数据源</span>
-          <select v-model="selectedDataSourceId" :disabled="isLoadingDataSources || !dataSources.length">
-            <option value="">未选择</option>
-            <option v-for="source in dataSources" :key="source.id" :value="source.id">
-              {{ source.name }} · {{ dataSourceTypeLabel(source.type) }}
-            </option>
-          </select>
-        </label>
-
-        <div v-if="selectedDataSource" class="datasource-summary">
-          <Server :size="16" />
-          <span>{{ selectedDataSource.host }}:{{ selectedDataSource.port }}/{{ selectedDataSource.database }}</span>
-        </div>
-
-        <div v-if="selectedDataSource" class="datasource-actions">
-          <button class="secondary-button" type="button" @click="downloadSelectedDataSourceSkill">
-            <Download :size="16" />
-            下载 SKILL.md
-          </button>
-          <button
-            class="secondary-button"
-            type="button"
-            :disabled="isReplacingSkill"
-            @click="openSkillUploadPicker"
-          >
-            <Upload :size="16" />
-            {{ isReplacingSkill ? "替换中" : "上传替换" }}
-          </button>
-          <button
-            class="secondary-button danger"
-            type="button"
-            :disabled="isDeletingDataSource"
-            @click="deleteSelectedDataSource"
-          >
-            <Trash2 :size="16" />
-            {{ isDeletingDataSource ? "删除中" : "删除数据源" }}
-          </button>
-          <input
-            ref="skillUploadInputRef"
-            class="visually-hidden"
-            type="file"
-            accept=".md,text/markdown,text/plain"
-            @change="replaceSelectedDataSourceSkill"
-          />
-        </div>
-
-        <form v-if="showDataSourceForm" class="datasource-form" @submit.prevent="saveDataSource">
-          <label class="field-label">
-            <span>名称</span>
-            <input v-model.trim="dataSourceForm.name" required placeholder="blog_prod" />
-          </label>
-          <label class="field-label">
-            <span>类型</span>
-            <select v-model="dataSourceForm.type">
-              <option value="mysql">MySQL</option>
-              <option value="clickhouse">ClickHouse</option>
-            </select>
-          </label>
-          <div class="field-grid">
-            <label class="field-label">
-              <span>Host</span>
-              <input v-model.trim="dataSourceForm.host" required />
-            </label>
-            <label class="field-label">
-              <span>Port</span>
-              <input v-model.number="dataSourceForm.port" required type="number" min="1" max="65535" />
-            </label>
-          </div>
-          <label class="field-label">
-            <span>Database</span>
-            <input v-model.trim="dataSourceForm.database" required />
-          </label>
-          <div class="field-grid">
-            <label class="field-label">
-              <span>Username</span>
-              <input v-model.trim="dataSourceForm.username" required />
-            </label>
-            <label class="field-label">
-              <span>Password</span>
-              <input v-model="dataSourceForm.password" type="password" autocomplete="new-password" />
-            </label>
-          </div>
-          <div class="form-actions">
-            <button class="secondary-button" type="button" :disabled="!canGenerateSkill" @click="generateSkill">
-              <Zap :size="16" />
-              {{ isGeneratingSkill ? "生成中" : "连接并生成" }}
-            </button>
-          </div>
-          <label class="field-label">
-            <span>Skill 文档</span>
-            <textarea
-              v-model="dataSourceForm.skill_body"
-              required
-              rows="8"
-              placeholder="点击连接并生成，或手动填写 Skill Markdown 正文"
-            />
-          </label>
-          <button class="secondary-button" type="submit" :disabled="!canSaveDataSource">
-            <Save :size="16" />
-            {{ isSavingDataSource ? "保存中" : "保存 Skill" }}
-          </button>
-        </form>
-
-        <p v-if="dataSourceError" class="inline-error">{{ dataSourceError }}</p>
-      </section>
-
-      <div class="status-card">
-        <span class="pulse-dot" :class="{ streaming: isStreaming }"></span>
-        <div>
-          <strong>{{ progressText }}</strong>
-          <small>{{ getLangGraphApiUrl() }}</small>
-        </div>
-      </div>
-    </section>
-
-    <section class="chat-workspace" aria-label="问答聊天区">
+    <section v-if="activeView === 'chat'" class="chat-workspace" aria-label="问答聊天区">
       <header class="chat-header">
         <div>
-          <p class="eyebrow">当前模式</p>
-          <h2>{{ activeAgent.label }}</h2>
+          <p class="eyebrow">问答终端</p>
+          <h2>{{ mainChatLabel }}</h2>
         </div>
-        <button class="icon-button" type="button" title="清空对话" @click="resetChat">
+        <button class="icon-button" type="button" title="删除会话" @click="resetChat">
           <RotateCcw :size="20" />
         </button>
       </header>
@@ -655,7 +389,7 @@ function handleKeydown(event: KeyboardEvent): void {
           </div>
           <div class="bubble" :class="message.status">
             <div v-if="message.role === 'assistant'" class="bubble-meta">
-              {{ agentLabel(message.agent) }}
+              {{ chatLabel(message.thread) }}
             </div>
 
             <div
@@ -694,22 +428,79 @@ function handleKeydown(event: KeyboardEvent): void {
           @keydown="handleKeydown"
         ></textarea>
         <div class="composer-actions">
-          <span>{{ activeAgent.caption }}</span>
-          <button
-            v-if="isStreaming"
-            class="send-button stop"
-            type="button"
-            @click="stopStreaming"
-          >
-            <CircleStop :size="20" />
-            停止
-          </button>
-          <button v-else class="send-button" type="submit" :disabled="!canSend">
-            <Send :size="20" />
-            发送
-          </button>
+          <div class="skill-toolbar">
+            <div class="skill-picker">
+              <button
+                class="skill-trigger"
+                type="button"
+                :class="{ active: isSkillPickerOpen || selectedSkills.length }"
+                @click="isSkillPickerOpen = !isSkillPickerOpen"
+              >
+                <Wrench :size="16" />
+                技能
+                <ChevronDown :size="15" />
+              </button>
+              <div v-if="isSkillPickerOpen" class="skill-popover">
+                <label class="skill-search">
+                  <span>搜索技能</span>
+                  <input v-model.trim="skillSearchText" placeholder="搜索技能" />
+                </label>
+                <div class="skill-list">
+                  <button
+                    v-for="skill in filteredSkills"
+                    :key="skill.id"
+                    class="skill-option"
+                    :class="{ selected: selectedSkillIds.includes(skill.id) }"
+                    type="button"
+                    @click="toggleSkill(skill.id)"
+                  >
+                    <span class="skill-avatar">{{ skill.name.slice(0, 1).toUpperCase() }}</span>
+                    <span>
+                      <strong>{{ skill.name }}</strong>
+                      <small>{{ skill.description }}</small>
+                    </span>
+                  </button>
+                  <p v-if="isLoadingSkills" class="skill-empty">加载技能中</p>
+                  <p v-else-if="!filteredSkills.length" class="skill-empty">没有匹配的技能</p>
+                  <p v-if="skillError" class="inline-error">{{ skillError }}</p>
+                </div>
+              </div>
+            </div>
+            <div v-if="selectedSkills.length" class="selected-skills">
+              <button
+                v-for="skill in selectedSkills"
+                :key="skill.id"
+                class="skill-chip"
+                type="button"
+                @click="removeSkill(skill.id)"
+              >
+                {{ skill.name }}
+              </button>
+            </div>
+          </div>
+          <div class="send-actions">
+            <button
+              v-if="isStreaming"
+              class="send-button stop"
+              type="button"
+              @click="stopStreaming"
+            >
+              <CircleStop :size="20" />
+              停止
+            </button>
+            <button v-else class="send-button" type="submit" :disabled="!canSend">
+              <Send :size="20" />
+              发送
+            </button>
+          </div>
         </div>
       </form>
     </section>
+    <DataSourceManager
+      v-else
+      :view="datasourceView"
+      class="manager-workspace"
+      @navigate="navigateView"
+    />
   </main>
 </template>
