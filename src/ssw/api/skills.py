@@ -23,6 +23,15 @@ async def create_skill(skill: SkillCreate, service: SkillServiceDep) -> SkillSum
     return await service.create_skill(skill)
 
 
+@routerSkills.post("/import", response_model=SkillSummary)
+async def import_skill(
+    service: SkillServiceDep,
+    file: UploadFile = File(...),
+) -> SkillSummary:
+    content = await file.read(SkillService.MAX_ARCHIVE_SIZE + 1)
+    return await service.import_skill_zip(file.filename, content)
+
+
 @routerSkills.get("/{skill_id}", response_model=SkillSummary)
 async def get_skill(skill_id: str, service: SkillServiceDep) -> SkillSummary:
     return await service.get_skill(skill_id)

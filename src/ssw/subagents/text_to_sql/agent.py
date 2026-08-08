@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from deepagents import CompiledSubAgent, create_deep_agent, AsyncSubAgent
+from deepagents import  create_deep_agent, AsyncSubAgent
 from deepagents.backends.filesystem import FilesystemBackend
 
 from ssw.config import SSW_AGENT_PROTOCOL_URL, SSW_WORKSPACE

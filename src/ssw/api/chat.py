@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from ssw.dependency import get_chat_service
-from ssw.schemas.chat import ChatHistory, ChatStreamRequest, ChatSummary
+from ssw.schemas.chat import (
+    ChatHistory,
+    ChatStreamRequest,
+    ChatSummary,
+    ChatTaskStatus,
+)
 from ssw.service.chat import ChatService
 
 routerChat = APIRouter(prefix="/chat", tags=["对话"])
@@ -32,6 +37,15 @@ async def stream_chat_answer(
         media_type="text/event-stream; charset=utf-8",
         headers={"X-Thread-Id": result.thread_id},
     )
+
+
+@routerChat.get("/tasks/{task_id}", response_model=ChatTaskStatus)
+async def get_chat_task_status(
+    task_id: str,
+    thread_id: str,
+    service: ChatServiceDep,
+) -> ChatTaskStatus:
+    return await service.get_task_status(task_id, thread_id)
 
 
 @routerChat.get("/{thread_id}/history", response_model=ChatHistory)

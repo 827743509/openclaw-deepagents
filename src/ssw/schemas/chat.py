@@ -9,6 +9,14 @@ class ChatStreamRequest(BaseModel):
     thread_id: str | None = None
     question: str = Field(min_length=1)
     context: str | None = None
+    skills: list[str] | None = None
+
+
+class ChatTaskStatus(BaseModel):
+    task_id: str
+    status: str
+    result: str | None = None
+    error: str | None = None
 
 
 class ChatMessage(BaseModel):

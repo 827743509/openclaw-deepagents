@@ -13,6 +13,8 @@ skill_name_adapter = TypeAdapter(SkillName)
 
 
 class SkillService:
+    MAX_ARCHIVE_SIZE = SkillRepository.MAX_ARCHIVE_SIZE
+
     def __init__(self, repository: SkillRepository) -> None:
         self.repository = repository
 
@@ -27,6 +29,19 @@ class SkillService:
         if not created:
             raise HTTPException(status_code=500, detail="技能创建失败")
         return created
+
+    async def import_skill_zip(self, filename: str | None, content: bytes) -> SkillSummary:
+        if not filename or not filename.lower().endswith(".zip"):
+            raise HTTPException(status_code=400, detail="只支持上传 .zip 文件")
+        try:
+            imported = await asyncio.to_thread(self.repository.import_zip, content)
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail="技能已存在") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not imported:
+            raise HTTPException(status_code=500, detail="Skill 导入失败")
+        return imported
 
     async def get_skill(self, skill_id: str) -> SkillSummary:
         self._validate_skill_id(skill_id)

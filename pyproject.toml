@@ -28,6 +28,7 @@ dependencies = [
   "pymysql>=1.1.1",
   "clickhouse-connect>=0.10.0",
   "langgraph-checkpoint-sqlite>=3.1.0",
+  "llama-index-core>=0.14.23",
 ]
 
 [tool.setuptools.packages.find]

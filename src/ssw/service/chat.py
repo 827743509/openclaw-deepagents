@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
+from langchain_core.messages import AIMessage
+from langgraph_sdk import get_client
 
-from ssw.schemas.chat import ChatHistory, ChatMessage, ChatStreamRequest, ChatSummary
+from ssw.config import SSW_AGENT_PROTOCOL_URL
+from ssw.schemas.chat import (
+    ChatHistory,
+    ChatMessage,
+    ChatStreamRequest,
+    ChatSummary,
+    ChatTaskStatus,
+)
 
 
 @dataclass(frozen=True)
@@ -29,7 +38,6 @@ class ChatService:
             raise HTTPException(status_code=400, detail="问题不能为空")
 
         thread_id = request.thread_id or uuid.uuid4().hex
-        self._validate_thread_id(thread_id)
 
         return ChatStreamResult(
             thread_id=thread_id,
@@ -64,7 +72,6 @@ class ChatService:
         return summaries
 
     async def get_history(self, thread_id: str) -> ChatHistory:
-        self._validate_thread_id(thread_id)
         config = self._config(thread_id)
         try:
             state = await self.agent.aget_state(config)
@@ -78,7 +85,6 @@ class ChatService:
         )
 
     async def delete_chat(self, thread_id: str) -> dict[str, bool]:
-        self._validate_thread_id(thread_id)
         await self.checkpointer.adelete_thread(thread_id)
         return {"deleted": True}
 
@@ -91,6 +97,9 @@ class ChatService:
             async for chunk in self.agent.astream(
                 {"messages": [{"role": "user", "content": content}]},
                 config=self._config(thread_id),
+                context={
+                        "request_skills":request.skills
+                    },
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
             ):
@@ -235,14 +244,143 @@ class ChatService:
             timestamp = raw_checkpoint.get("ts")
             if isinstance(timestamp, str):
                 try:
-                    from datetime import datetime
-
                     return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
                 except ValueError:
                     pass
         return 0.0
 
+    async def get_task_status(
+        self,
+        task_id: str,
+        parent_thread_id: str,
+    ) -> ChatTaskStatus:
+        result: str | None = None
+        error: str | None = None
+        try:
+            async with get_client(url=SSW_AGENT_PROTOCOL_URL, api_key=None) as client:
+                runs = await client.runs.list(thread_id=task_id, limit=1)
+                if not runs:
+                    raise HTTPException(status_code=404, detail="异步任务不存在")
+
+                run = runs[0]
+                status = str(run.get("status") or "unknown")
+                if status == "success":
+                    thread = await client.threads.get(thread_id=task_id)
+                    result = self._extract_task_result(thread.get("values"))
+                elif status == "error":
+                    raw_error = run.get("error")
+                    error = str(raw_error) if raw_error else "异步任务执行失败"
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="查询异步任务状态失败") from exc
+
+        await self._update_task_checkpoint(
+            parent_thread_id,
+            task_id,
+            run,
+            result,
+            error,
+        )
+        return ChatTaskStatus(
+            task_id=task_id,
+            status=status,
+            result=result,
+            error=error,
+        )
+
+    async def _update_task_checkpoint(
+        self,
+        parent_thread_id: str,
+        task_id: str,
+        run: dict[str, Any],
+        result: str | None,
+        error: str | None,
+    ) -> None:
+        config = self._config(parent_thread_id)
+        try:
+            state = await self.agent.aget_state(config)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="读取主会话任务状态失败") from exc
+        print(f'stateType: {type(state)}')
+        values = getattr(state, "values", None)
+        async_tasks = values.get("async_tasks") if isinstance(values, dict) else None
+        stored_task = async_tasks.get(task_id) if isinstance(async_tasks, dict) else None
+        if not isinstance(stored_task, dict):
+            raise HTTPException(status_code=404, detail="主会话未记录该异步任务")
+
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        status = str(run.get("status") or "unknown")
+        run_id = str(run.get("run_id") or stored_task.get("run_id") or "")
+        result_already_written = (
+            stored_task.get("run_id") == run_id
+            and stored_task.get("status")
+            in {"success", "error", "cancelled", "interrupted", "timeout"}
+        )
+        updated_task = {
+            **stored_task,
+            "task_id": task_id,
+            "thread_id": task_id,
+            "run_id": run_id,
+            "status": status,
+            "last_checked_at": now,
+            "last_updated_at": (
+                now
+                if stored_task.get("status") != status
+                else stored_task.get("last_updated_at", now)
+            ),
+        }
+        checkpoint_update: dict[str, Any] = {
+            "async_tasks": {task_id: updated_task},
+        }
+        task_message = self._build_task_message(
+            task_id,
+            updated_task["run_id"],
+            status,
+            result,
+            error,
+        )
+        if task_message is not None and not result_already_written:
+            checkpoint_update["messages"] = [task_message]
+
+        try:
+            await self.agent.aupdate_state(
+                config,
+                checkpoint_update,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="更新主会话任务状态失败") from exc
+
     @staticmethod
-    def _validate_thread_id(thread_id: str) -> None:
-        if not re.fullmatch(r"[a-zA-Z0-9_.:-]+", thread_id):
-            raise HTTPException(status_code=404, detail="会话不存在")
+    def _build_task_message(
+        task_id: str,
+        run_id: str,
+        status: str,
+        result: str | None,
+        error: str | None,
+    ) -> AIMessage | None:
+        if status == "success" and result:
+            content = f"异步任务已完成：\n\n{result}"
+        elif status == "error":
+            content = f"异步任务执行失败：\n\n{error or '未返回错误详情'}"
+        else:
+            return None
+
+        return AIMessage(
+            id=f"async-task-result-{run_id or task_id}",
+            content=content,
+            additional_kwargs={
+                "async_task_id": task_id,
+                "async_task_run_id": run_id,
+                "async_task_result": result,
+                "async_task_error": error,
+            },
+        )
+
+    @classmethod
+    def _extract_task_result(cls, values: Any) -> str:
+        messages = cls._extract_messages(values)
+        for message in reversed(messages):
+            if message.role == "assistant" and message.content.strip():
+                return message.content.strip()
+        return "异步任务已完成，但没有返回文本结果。"

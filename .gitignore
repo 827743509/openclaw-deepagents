@@ -1,6 +1,7 @@
 .venv/
 .env
 .idea
+.checkpoint/
 data/memories
 workspace
 .langgraph_api

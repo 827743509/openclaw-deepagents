@@ -8,11 +8,15 @@ import {
   LoaderCircle,
   RotateCcw,
   Send,
+  Upload,
   Wrench,
 } from "@lucide/vue";
 import AppSidebar, { type SidebarView } from "./components/AppSidebar.vue";
+import AsyncTaskStatusList from "./components/AsyncTaskStatusList.vue";
 import DataSourceManager from "./components/DataSourceManager.vue";
+import { useAsyncTaskPolling } from "./composables/useAsyncTaskPolling";
 import {
+  type AsyncTaskStatus,
   type ChatSummary,
   type SkillSummary,
   type ThreadId,
@@ -20,6 +24,7 @@ import {
   deleteChat,
   getLangGraphApiUrl,
   getChatHistory,
+  importSkillZip,
   listRecentChats,
   listSkills,
   streamChatAnswer,
@@ -34,6 +39,7 @@ type ChatMessage = {
   thread?: ThreadId;
   status?: "streaming" | "done" | "error" | "stopped";
   toolCalls?: ToolCallProgress[];
+  asyncTasks?: AsyncTaskStatus[];
 };
 
 const mainChatLabel = "SSW Agent";
@@ -48,11 +54,11 @@ const threadError = ref("");
 const skillError = ref("");
 const skillSearchText = ref("");
 const isSkillPickerOpen = ref(false);
+const isImportingSkill = ref(false);
+const skillFileInput = ref<HTMLInputElement | null>(null);
 const recentThreads = ref<ChatSummary[]>([]);
 const skills = ref<SkillSummary[]>([]);
-const selectedSkillIds = ref<string[]>(
-  JSON.parse(localStorage.getItem("ssw.selectedSkillIds") || "[]") as string[],
-);
+const selectedSkillIds = ref<string[]>([]);
 const messages = ref<ChatMessage[]>([
   {
     id: crypto.randomUUID(),
@@ -64,6 +70,17 @@ const messages = ref<ChatMessage[]>([
 
 const scrollRef = ref<HTMLElement | null>(null);
 const abortController = ref<AbortController | null>(null);
+const pendingHistoryRefreshThreadId = ref<ThreadId | null>(null);
+const { start: watchAsyncTask, stopAll: stopAllTaskPolling } = useAsyncTaskPolling({
+  intervalMs: 30_000,
+  onError(error) {
+    progressText.value = error instanceof Error ? error.message : "查询异步任务失败";
+  },
+  onTerminal(task, threadId) {
+    progressText.value = task.status === "success" ? "异步任务已完成" : "异步任务已结束";
+    void refreshTaskResultHistory(threadId);
+  },
+});
 
 const datasourceView = computed(() => (
   activeView.value === "datasource-create" ? "datasource-create" : "datasource-list"
@@ -144,16 +161,11 @@ async function refreshSkills(): Promise<void> {
     skills.value = await listSkills();
     const availableIds = new Set(skills.value.map((skill) => skill.id));
     selectedSkillIds.value = selectedSkillIds.value.filter((skillId) => availableIds.has(skillId));
-    persistSelectedSkills();
   } catch (error) {
     skillError.value = error instanceof Error ? error.message : "加载技能失败";
   } finally {
     isLoadingSkills.value = false;
   }
-}
-
-function persistSelectedSkills(): void {
-  localStorage.setItem("ssw.selectedSkillIds", JSON.stringify(selectedSkillIds.value));
 }
 
 function toggleSkill(skillId: string): void {
@@ -162,23 +174,10 @@ function toggleSkill(skillId: string): void {
   } else {
     selectedSkillIds.value = [...selectedSkillIds.value, skillId];
   }
-  persistSelectedSkills();
 }
 
 function removeSkill(skillId: string): void {
   selectedSkillIds.value = selectedSkillIds.value.filter((item) => item !== skillId);
-  persistSelectedSkills();
-}
-
-function buildSkillContext(): string | undefined {
-  if (!selectedSkills.value.length) {
-    return undefined;
-  }
-
-  return [
-    "用户在前端选择了以下技能，请优先结合这些技能的用途回答：",
-    ...selectedSkills.value.map((skill) => `- ${skill.name}: ${skill.description}`),
-  ].join("\n");
 }
 
 async function loadThread(threadId: ThreadId): Promise<void> {
@@ -186,6 +185,7 @@ async function loadThread(threadId: ThreadId): Promise<void> {
     return;
   }
 
+  stopAllTaskPolling();
   threadError.value = "";
   try {
     const history = await getChatHistory(threadId);
@@ -203,6 +203,7 @@ async function loadThread(threadId: ThreadId): Promise<void> {
 }
 
 async function resetChat(): Promise<void> {
+  stopAllTaskPolling();
   if (isStreaming.value) {
     stopStreaming();
   }
@@ -224,6 +225,7 @@ async function resetChat(): Promise<void> {
 }
 
 async function startNewChat(): Promise<void> {
+  stopAllTaskPolling();
   if (isStreaming.value) {
     stopStreaming();
   }
@@ -237,7 +239,93 @@ async function startNewChat(): Promise<void> {
 }
 
 function navigateView(view: SidebarView): void {
+  if (view !== "chat") {
+    stopAllTaskPolling();
+  }
   activeView.value = view;
+}
+
+function openSkillImport(): void {
+  skillFileInput.value?.click();
+}
+
+async function handleSkillImport(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  skillError.value = "";
+  isImportingSkill.value = true;
+  try {
+    const importedSkill = await importSkillZip(file);
+    await refreshSkills();
+    progressText.value = `已导入 Skill：${importedSkill.name}`;
+  } catch (error) {
+    skillError.value = error instanceof Error ? error.message : "导入 Skill 失败";
+  } finally {
+    isImportingSkill.value = false;
+    input.value = "";
+  }
+}
+
+async function refreshTaskResultHistory(threadId: ThreadId): Promise<void> {
+  if (activeView.value !== "chat" || currentThreadId.value !== threadId) {
+    return;
+  }
+  if (isStreaming.value) {
+    pendingHistoryRefreshThreadId.value = threadId;
+    return;
+  }
+
+  pendingHistoryRefreshThreadId.value = null;
+  try {
+    const history = await getChatHistory(threadId);
+    if (activeView.value !== "chat" || currentThreadId.value !== threadId) {
+      return;
+    }
+    if (isStreaming.value) {
+      pendingHistoryRefreshThreadId.value = threadId;
+      return;
+    }
+
+    const historyMessages = mapHistoryMessages(history);
+    const currentIsHistoryPrefix = messages.value.every((message, index) => (
+      historyMessages[index]?.role === message.role
+      && historyMessages[index]?.content === message.content
+    ));
+    if (currentIsHistoryPrefix) {
+      messages.value.push(...historyMessages.slice(messages.value.length));
+    } else {
+      messages.value = historyMessages;
+    }
+    await scrollToBottom();
+  } catch (error) {
+    threadError.value = error instanceof Error ? error.message : "刷新异步任务结果失败";
+  }
+}
+
+function upsertAsyncTask(message: ChatMessage, task: AsyncTaskStatus): void {
+  const tasks = message.asyncTasks ?? [];
+  const existing = tasks.find((item) => item.task_id === task.task_id);
+  if (existing) {
+    Object.assign(existing, task);
+  } else {
+    tasks.push(task);
+  }
+  message.asyncTasks = tasks;
+}
+
+function startTaskPolling(message: ChatMessage, task: AsyncTaskStatus): void {
+  const threadId = message.thread ?? currentThreadId.value;
+  if (!threadId) {
+    progressText.value = "缺少主会话 ID，无法查询异步任务";
+    return;
+  }
+  watchAsyncTask(task, threadId, (updatedTask) => {
+    upsertAsyncTask(message, updatedTask);
+  });
 }
 
 function upsertToolCall(message: ChatMessage, toolCall: ToolCallProgress): void {
@@ -281,6 +369,7 @@ async function sendMessage(): Promise<void> {
     content: "",
     status: "streaming",
     toolCalls: [],
+    asyncTasks: [],
   };
 
   messages.value.push({
@@ -308,6 +397,10 @@ async function sendMessage(): Promise<void> {
       upsertToolCall(assistantMessage, toolCall);
       void scrollToBottom();
     },
+    onAsyncTask(task) {
+      startTaskPolling(assistantMessage, task);
+      void scrollToBottom();
+    },
     onProgress(progress) {
       progressText.value = progress.node
         ? `${progress.node} · ${progress.detail}`
@@ -326,6 +419,10 @@ async function sendMessage(): Promise<void> {
       abortController.value = null;
       void refreshRecentThreads();
       void scrollToBottom();
+      const pendingThreadId = pendingHistoryRefreshThreadId.value;
+      if (pendingThreadId) {
+        void refreshTaskResultHistory(pendingThreadId);
+      }
     },
     onError(message) {
       assistantMessage.status = "error";
@@ -337,8 +434,12 @@ async function sendMessage(): Promise<void> {
       abortController.value = null;
       void refreshRecentThreads();
       void scrollToBottom();
+      const pendingThreadId = pendingHistoryRefreshThreadId.value;
+      if (pendingThreadId) {
+        void refreshTaskResultHistory(pendingThreadId);
+      }
     },
-  }, buildSkillContext());
+  }, selectedSkills.value.map((skill) => skill.name));
 }
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -415,6 +516,10 @@ function handleKeydown(event: KeyboardEvent): void {
             </div>
 
             <p v-if="message.content">{{ message.content }}</p>
+            <AsyncTaskStatusList
+              v-if="message.role === 'assistant' && message.asyncTasks?.length"
+              :tasks="message.asyncTasks"
+            />
           </div>
         </article>
       </div>
@@ -463,6 +568,24 @@ function handleKeydown(event: KeyboardEvent): void {
                   <p v-if="isLoadingSkills" class="skill-empty">加载技能中</p>
                   <p v-else-if="!filteredSkills.length" class="skill-empty">没有匹配的技能</p>
                   <p v-if="skillError" class="inline-error">{{ skillError }}</p>
+                </div>
+                <div class="skill-import-footer">
+                  <button
+                    class="skill-import-button"
+                    type="button"
+                    :disabled="isImportingSkill"
+                    @click="openSkillImport"
+                  >
+                    <Upload :size="16" />
+                    {{ isImportingSkill ? "导入中..." : "导入 Skill ZIP" }}
+                  </button>
+                  <input
+                    ref="skillFileInput"
+                    hidden
+                    type="file"
+                    accept=".zip,application/zip"
+                    @change="handleSkillImport"
+                  />
                 </div>
               </div>
             </div>

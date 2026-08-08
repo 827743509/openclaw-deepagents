@@ -14,8 +14,16 @@ export type StreamProgress = {
   detail: string;
 };
 
+export type AsyncTaskStatus = {
+  task_id: string;
+  status: string;
+  result?: string | null;
+  error?: string | null;
+};
+
 export type StreamCallbacks = {
   onThreadId?: (threadId: ThreadId) => void;
+  onAsyncTask?: (task: AsyncTaskStatus) => void;
   onToolCall: (toolCall: ToolCallProgress) => void;
   onProgress: (progress: StreamProgress) => void;
   onFinal: (content: string) => void;
@@ -196,12 +204,49 @@ function iterUpdateMessages(chunk: unknown): Array<{ node?: string; message: unk
   return messages;
 }
 
+function iterAsyncTasks(chunk: unknown): AsyncTaskStatus[] {
+  const chunkRecord = asRecord(chunk);
+  const payload = chunkRecord && "data" in chunkRecord ? chunkRecord.data : chunk;
+  const payloadRecord = asRecord(payload);
+  if (!payloadRecord) {
+    return [];
+  }
+
+  const candidates = [payloadRecord];
+  for (const value of Object.values(payloadRecord)) {
+    const valueRecord = asRecord(value);
+    if (valueRecord) {
+      candidates.push(valueRecord);
+    }
+  }
+
+  const tasks = new Map<string, AsyncTaskStatus>();
+  for (const candidate of candidates) {
+    const rawTasks = asRecord(candidate.async_tasks);
+    if (!rawTasks) {
+      continue;
+    }
+
+    for (const [taskId, rawTask] of Object.entries(rawTasks)) {
+      const taskRecord = asRecord(rawTask);
+      const resolvedTaskId = taskRecord?.task_id;
+      const status = taskRecord?.status;
+      if (typeof status !== "string") {
+        continue;
+      }
+      const id = typeof resolvedTaskId === "string" ? resolvedTaskId : taskId;
+      tasks.set(id, { task_id: id, status });
+    }
+  }
+  return [...tasks.values()];
+}
+
 export async function streamChatAnswer(
   threadId: ThreadId | null,
   question: string,
   signal: AbortSignal,
   callbacks: StreamCallbacks,
-  context?: string,
+  skills: string[] = [],
 ): Promise<void> {
   const seenToolCalls = new Set<string>();
   const finishedToolCalls = new Set<string>();
@@ -267,7 +312,7 @@ export async function streamChatAnswer(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ thread_id: threadId, question, context }),
+      body: JSON.stringify({ thread_id: threadId, question, skills }),
       signal,
     });
 
@@ -298,6 +343,9 @@ export async function streamChatAnswer(
       }
 
       if (eventName.includes("updates")) {
+        for (const task of iterAsyncTasks(chunk)) {
+          callbacks.onAsyncTask?.(task);
+        }
         for (const { node, message } of iterUpdateMessages(chunk)) {
           inspectMessage(message, node, true);
         }
@@ -329,6 +377,21 @@ export async function getChatHistory(threadId: ThreadId): Promise<ChatHistory> {
   return (await response.json()) as ChatHistory;
 }
 
+export async function getAsyncTaskStatus(
+  taskId: string,
+  threadId: ThreadId,
+): Promise<AsyncTaskStatus> {
+  const query = new URLSearchParams({ thread_id: threadId });
+  const response = await fetch(
+    `${apiUrl}/chat/tasks/${encodeURIComponent(taskId)}?${query.toString()}`,
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `查询异步任务状态失败：${response.status}`);
+  }
+  return (await response.json()) as AsyncTaskStatus;
+}
+
 export async function listRecentChats(limit = 10): Promise<ChatSummary[]> {
   const response = await fetch(`${apiUrl}/chat?limit=${limit}`);
   if (!response.ok) {
@@ -345,6 +408,20 @@ export async function listSkills(): Promise<SkillSummary[]> {
     throw new Error(detail || `加载技能失败：${response.status}`);
   }
   return (await response.json()) as SkillSummary[];
+}
+
+export async function importSkillZip(file: File): Promise<SkillSummary> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetch(`${apiUrl}/skills/import`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `导入 Skill 失败：${response.status}`);
+  }
+  return (await response.json()) as SkillSummary;
 }
 
 export async function deleteChat(threadId: ThreadId): Promise<void> {

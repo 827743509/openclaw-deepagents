@@ -22,7 +22,7 @@ from ssw.config import SSW_WORKSPACE
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    checkpoint_path = Path(SSW_WORKSPACE).resolve() / "checkpoint.db"
+    checkpoint_path = Path(SSW_WORKSPACE).resolve() /".checkpoint"/ "checkpoint.db"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
     async with AsyncSqliteSaver.from_conn_string(
@@ -38,10 +38,7 @@ app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:9000",
-        "http://localhost:9000",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

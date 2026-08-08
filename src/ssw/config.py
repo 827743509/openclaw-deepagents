@@ -5,7 +5,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE = PROJECT_ROOT / ".env"
 load_dotenv(ENV_FILE)
 
 
@@ -22,7 +23,7 @@ def _get_int_env(name: str, default: int) -> int:
 SSW_BASE_URL = os.getenv("SSW_BASE_URL", "https://api.moonshot.cn/v1")
 SSW_MODEL = os.getenv("SSW_MODEL", "kimi-k3")
 SSW_API_KEY = os.getenv("SSW_API_KEY")
-SSW_WORKSPACE = os.getenv("SSW_WORKSPACE", str(Path.home() / ".ssw"))
+SSW_WORKSPACE = str(PROJECT_ROOT)
 SSW_WEB_HOST = os.getenv("SSW_WEB_HOST", "127.0.0.1")
 SSW_WEB_PORT = _get_int_env("SSW_WEB_PORT", 8000)
 SSW_AGENT_PROTOCOL_HOST = os.getenv("SSW_AGENT_PROTOCOL_HOST", "127.0.0.1")

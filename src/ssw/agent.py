@@ -5,7 +5,8 @@ from ssw.llm import build_llm
 from deepagents import (
     create_deep_agent,
 )
-from ssw.config import REDIS_URL, SSW_WORKSPACE
+from ssw.config import  SSW_WORKSPACE
+from ssw.middleware.DynamicSkillMiddleware import DynamicSkillsMiddleware
 from ssw.subagents.text_to_sql import text_to_sql_subagent
 
 SYSTEM_PROMPT = """
@@ -50,6 +51,7 @@ def create_chat_agent(checkpoint):
     return  create_deep_agent(
     model=llm,
     tools=tools,
+    middleware=[DynamicSkillsMiddleware()],
     system_prompt=SYSTEM_PROMPT,
     skills=[str(SKILLS_PATH)],
     subagents=subagents,
