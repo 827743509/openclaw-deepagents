@@ -15,9 +15,11 @@ if str(src_dir) not in sys.path:
 
 from ssw.api.database import routerDataBase
 from ssw.api.chat import routerChat
+from ssw.api.mcp import routerMcp
 from ssw.api.skills import routerSkills
 from ssw.agent import create_chat_agent
 from ssw.config import SSW_WORKSPACE
+from ssw.dependency import get_mcp_service
 
 
 @asynccontextmanager
@@ -30,7 +32,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ) as checkpointer:
         await checkpointer.setup()
         app.state.checkpointer = checkpointer
-        app.state.agent = create_chat_agent(checkpointer)
+        mcp_service = get_mcp_service()
+        try:
+            mcp_tools = await mcp_service.load_current_tools()
+        except Exception as exc:
+            print(f"MCP 工具加载失败，当前将不启用 MCP 工具：{exc}", flush=True)
+            mcp_tools = []
+        app.state.agent = create_chat_agent(checkpointer, mcp_tools)
         yield
 
 
@@ -47,4 +55,5 @@ app.add_middleware(
 
 app.include_router(routerChat)
 app.include_router(routerDataBase)
+app.include_router(routerMcp)
 app.include_router(routerSkills)

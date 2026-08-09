@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+from typing import Any
 from deepagents.backends import LocalShellBackend
 from ssw.llm import build_llm
 from deepagents import (
@@ -37,8 +38,6 @@ SKILLS_PATH.mkdir(parents=True, exist_ok=True)
 
 
 
-tools = []
-
 subagents = [
     text_to_sql_subagent,
 ]
@@ -47,10 +46,10 @@ llm =build_llm()
 
 
 
-def create_chat_agent(checkpoint):
+def create_chat_agent(checkpoint: Any, tools: list[Any] | None = None):
     return  create_deep_agent(
     model=llm,
-    tools=tools,
+    tools=tools or [],
     middleware=[DynamicSkillsMiddleware()],
     system_prompt=SYSTEM_PROMPT,
     skills=[str(SKILLS_PATH)],

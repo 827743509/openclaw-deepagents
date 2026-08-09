@@ -8,12 +8,14 @@ import {
   LoaderCircle,
   RotateCcw,
   Send,
+  Settings,
   Upload,
   Wrench,
 } from "@lucide/vue";
 import AppSidebar, { type SidebarView } from "./components/AppSidebar.vue";
 import AsyncTaskStatusList from "./components/AsyncTaskStatusList.vue";
 import DataSourceManager from "./components/DataSourceManager.vue";
+import McpConfigDialog from "./components/McpConfigDialog.vue";
 import { useAsyncTaskPolling } from "./composables/useAsyncTaskPolling";
 import {
   type AsyncTaskStatus,
@@ -55,6 +57,7 @@ const skillError = ref("");
 const skillSearchText = ref("");
 const isSkillPickerOpen = ref(false);
 const isImportingSkill = ref(false);
+const isMcpConfigOpen = ref(false);
 const skillFileInput = ref<HTMLInputElement | null>(null);
 const recentThreads = ref<ChatSummary[]>([]);
 const skills = ref<SkillSummary[]>([]);
@@ -589,6 +592,15 @@ function handleKeydown(event: KeyboardEvent): void {
                 </div>
               </div>
             </div>
+            <button
+              class="skill-trigger"
+              type="button"
+              :class="{ active: isMcpConfigOpen }"
+              @click="isMcpConfigOpen = true"
+            >
+              <Settings :size="16" />
+              MCP 配置
+            </button>
             <div v-if="selectedSkills.length" class="selected-skills">
               <button
                 v-for="skill in selectedSkills"
@@ -625,5 +637,6 @@ function handleKeydown(event: KeyboardEvent): void {
       class="manager-workspace"
       @navigate="navigateView"
     />
+    <McpConfigDialog v-if="isMcpConfigOpen" @close="isMcpConfigOpen = false" />
   </main>
 </template>

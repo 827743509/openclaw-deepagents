@@ -1,21 +1,19 @@
+from __future__ import annotations
+
 from typing import Any
+
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 
-TRAVEL_MCP_CONNECTIONS = {
-    "ssw": {
-        "transport": "streamable_http",
-        "url": "http://127.0.0.1:8080/ssw-mcp-server/mcp",
-    },
-}
-
-
-async def load_mcp_tools_by_name(name: str) -> list[Any]:
-    if name not in TRAVEL_MCP_CONNECTIONS:
-        raise ValueError(f"Unknown MCP connection: {name}")
-
-    client = MultiServerMCPClient({
-        name: TRAVEL_MCP_CONNECTIONS[name]
-    })
-
-    return await client.get_tools()
+async def load_mcp_server_tools(
+    server_name: str,
+    connection: dict[str, Any],
+) -> list[Any]:
+    client = MultiServerMCPClient({server_name: connection})
+    tools = await client.get_tools(server_name=server_name)
+    for tool in tools:
+        tool.metadata = {
+            **(tool.metadata or {}),
+            "mcpserver": server_name,
+        }
+    return tools
