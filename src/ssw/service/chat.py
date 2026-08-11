@@ -3,20 +3,23 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
 from langchain_core.messages import AIMessage
+from langgraph.types import Command
 from langgraph_sdk import get_client
 
 from ssw.config import SSW_AGENT_PROTOCOL_URL
 from ssw.schemas.chat import (
     ChatHistory,
     ChatMessage,
+    ChatResumeRequest,
     ChatStreamRequest,
     ChatSummary,
+    ChatSummaryPage,
     ChatTaskStatus,
 )
 
@@ -44,18 +47,34 @@ class ChatService:
             stream=self.stream_answer(thread_id, request),
         )
 
-    async def list_recent(self, limit: int = 10) -> list[ChatSummary]:
-        normalized_limit = min(max(limit, 1), 50)
-        checkpoints = await self._list_checkpoints(normalized_limit * 20)
+    async def list_recent(
+        self,
+        page: int = 1,
+        page_size: int = 10,
+    ) -> ChatSummaryPage:
+        normalized_page = max(page, 1)
+        normalized_page_size = min(max(page_size, 1), 50)
+        offset = (normalized_page - 1) * normalized_page_size
         seen_thread_ids: set[str] = set()
-        summaries: list[ChatSummary] = []
+        page_checkpoints: list[tuple[str, Any]] = []
+        has_more = False
 
-        for checkpoint in checkpoints:
+        async for checkpoint in self.checkpointer.alist(None):
             thread_id = self._extract_thread_id(getattr(checkpoint, "config", None))
             if not thread_id or thread_id in seen_thread_ids:
                 continue
 
             seen_thread_ids.add(thread_id)
+            thread_index = len(seen_thread_ids) - 1
+            if thread_index < offset:
+                continue
+            if len(page_checkpoints) >= normalized_page_size:
+                has_more = True
+                break
+            page_checkpoints.append((thread_id, checkpoint))
+
+        summaries: list[ChatSummary] = []
+        for thread_id, checkpoint in page_checkpoints:
             messages = await self._get_thread_messages(thread_id)
             summaries.append(
                 ChatSummary(
@@ -66,10 +85,12 @@ class ChatService:
                     updated_at=self._extract_checkpoint_timestamp(checkpoint),
                 )
             )
-            if len(summaries) >= normalized_limit:
-                break
-
-        return summaries
+        return ChatSummaryPage(
+            items=summaries,
+            page=normalized_page,
+            page_size=normalized_page_size,
+            has_more=has_more,
+        )
 
     async def get_history(self, thread_id: str) -> ChatHistory:
         config = self._config(thread_id)
@@ -90,23 +111,130 @@ class ChatService:
 
     async def stream_answer(self, thread_id: str, request: ChatStreamRequest) -> AsyncIterator[bytes]:
         content = request.question.strip()
-        if request.context:
-            content = f"{request.context.strip()}\n\n用户问题：{content}"
 
+        async for event in self._stream_agent(
+            thread_id,
+            {"messages": [{"role": "user", "content": content}]},
+            request.skills,
+            request.permissions,
+        ):
+            yield event
+
+    async def stream_resume(
+        self,
+        thread_id: str,
+        request: ChatResumeRequest,
+    ) -> AsyncIterator[bytes]:
+        async for event in self._stream_agent(
+            thread_id,
+            Command(resume=request.decisions),
+            request.skills,
+            request.permissions,
+        ):
+            yield event
+
+    async def _stream_agent(
+        self,
+        thread_id: str,
+        agent_input: Any,
+        skills: list[str] | None,
+        permissions: str,
+    ) -> AsyncIterator[bytes]:
         try:
+            historical_message_ids = await self._get_existing_message_ids(thread_id)
             async for chunk in self.agent.astream(
-                {"messages": [{"role": "user", "content": content}]},
+                agent_input,
                 config=self._config(thread_id),
                 context={
-                        "request_skills":request.skills
-                    },
+                    "request_skills": skills or [],
+                    "permissions": permissions,
+                },
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
             ):
                 event_name, data = self._normalize_stream_chunk(chunk)
-                yield self._to_sse(event_name, data)
+                serialized_data = self._jsonable(data)
+                filtered_data = self._filter_historical_stream_messages(
+                    event_name,
+                    serialized_data,
+                    historical_message_ids,
+                )
+                if filtered_data is not None:
+                    yield self._to_sse(event_name, filtered_data)
         except Exception as exc:
             yield self._to_sse("error", {"detail": str(exc)})
+
+    async def _get_existing_message_ids(self, thread_id: str) -> set[str]:
+        try:
+            state = await self.agent.aget_state(self._config(thread_id))
+        except Exception:
+            return set()
+
+        values = getattr(state, "values", None)
+        raw_messages = self._find_messages(values)
+        message_ids: set[str] = set()
+        for message in raw_messages:
+            message_id = self._extract_message_id(message)
+            if message_id:
+                message_ids.add(message_id)
+        return message_ids
+
+    @classmethod
+    def _filter_historical_stream_messages(
+        cls,
+        event_name: str,
+        data: Any,
+        historical_message_ids: set[str],
+    ) -> Any:
+        if not historical_message_ids:
+            return data
+
+        if event_name == "messages":
+            message = data[0] if isinstance(data, list) and data else data
+            if cls._extract_message_id(message) in historical_message_ids:
+                return None
+            return data
+
+        return cls._filter_update_messages(data, historical_message_ids)
+
+    @classmethod
+    def _filter_update_messages(
+        cls,
+        value: Any,
+        historical_message_ids: set[str],
+    ) -> Any:
+        if isinstance(value, list):
+            return [
+                cls._filter_update_messages(item, historical_message_ids)
+                for item in value
+            ]
+        if not isinstance(value, dict):
+            return value
+
+        filtered: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "messages" and isinstance(item, list):
+                current_messages = [
+                    message
+                    for message in item
+                    if cls._extract_message_id(message) not in historical_message_ids
+                ]
+                if current_messages:
+                    filtered[key] = current_messages
+                continue
+            filtered[key] = cls._filter_update_messages(
+                item,
+                historical_message_ids,
+            )
+        return filtered
+
+    @staticmethod
+    def _extract_message_id(message: Any) -> str:
+        if isinstance(message, dict):
+            message_id = message.get("id")
+        else:
+            message_id = getattr(message, "id", None)
+        return message_id if isinstance(message_id, str) else ""
 
     @staticmethod
     def _config(thread_id: str) -> dict[str, Any]:
@@ -142,6 +270,8 @@ class ChatService:
             return [cls._jsonable(item) for item in value]
         if isinstance(value, dict):
             return {str(key): cls._jsonable(item) for key, item in value.items()}
+        if is_dataclass(value) and not isinstance(value, type):
+            return cls._jsonable(asdict(value))
         if hasattr(value, "model_dump"):
             return cls._jsonable(value.model_dump())
         if hasattr(value, "dict"):
@@ -205,9 +335,6 @@ class ChatService:
                     parts.append(item["text"])
             return "".join(parts)
         return ""
-
-    async def _list_checkpoints(self, limit: int) -> list[Any]:
-        return [checkpoint async for checkpoint in self.checkpointer.alist(None, limit=limit)]
 
     async def _get_thread_messages(self, thread_id: str) -> list[ChatMessage]:
         try:

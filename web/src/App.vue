@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, h, nextTick, onMounted, ref } from "vue";
+import { Modal } from "ant-design-vue";
 import {
   Bot,
   CheckCircle2,
@@ -9,6 +10,7 @@ import {
   RotateCcw,
   Send,
   Settings,
+  Shield,
   Upload,
   Wrench,
 } from "@lucide/vue";
@@ -20,8 +22,10 @@ import { useAsyncTaskPolling } from "./composables/useAsyncTaskPolling";
 import {
   type AsyncTaskStatus,
   type ChatSummary,
+  type PermissionLevel,
   type SkillSummary,
   type ThreadId,
+  type ToolApprovalRequest,
   type ToolCallProgress,
   deleteChat,
   getLangGraphApiUrl,
@@ -45,11 +49,15 @@ type ChatMessage = {
 };
 
 const mainChatLabel = "SSW Agent";
+const historyPageSize = 10;
 const activeView = ref<SidebarView>("chat");
 const currentThreadId = ref<ThreadId | null>(localStorage.getItem("ssw.currentThreadId"));
 const inputText = ref("");
 const isStreaming = ref(false);
 const isLoadingThreads = ref(false);
+const historyPage = ref(0);
+const hasMoreThreads = ref(true);
+const historyRequestVersion = ref(0);
 const isLoadingSkills = ref(false);
 const progressText = ref("待命中");
 const threadError = ref("");
@@ -58,6 +66,8 @@ const skillSearchText = ref("");
 const isSkillPickerOpen = ref(false);
 const isImportingSkill = ref(false);
 const isMcpConfigOpen = ref(false);
+const isPermissionPickerOpen = ref(false);
+const permissionLevel = ref<PermissionLevel>("low");
 const skillFileInput = ref<HTMLInputElement | null>(null);
 const recentThreads = ref<ChatSummary[]>([]);
 const skills = ref<SkillSummary[]>([]);
@@ -119,6 +129,10 @@ onMounted(() => {
   }
 });
 
+const permissionLabel = computed(() => (
+  permissionLevel.value === "high" ? "完全访问权限" : "需要审批"
+));
+
 function chatLabel(_threadId?: ThreadId): string {
   return mainChatLabel;
 }
@@ -146,14 +160,60 @@ function mapHistoryMessages(history: Awaited<ReturnType<typeof getChatHistory>>)
 }
 
 async function refreshRecentThreads(): Promise<void> {
+  const requestVersion = ++historyRequestVersion.value;
   isLoadingThreads.value = true;
   threadError.value = "";
   try {
-    recentThreads.value = await listRecentChats(10);
+    const result = await listRecentChats(1, historyPageSize);
+    if (requestVersion !== historyRequestVersion.value) {
+      return;
+    }
+    recentThreads.value = result.items;
+    historyPage.value = result.page;
+    hasMoreThreads.value = result.has_more;
   } catch (error) {
+    if (requestVersion !== historyRequestVersion.value) {
+      return;
+    }
     threadError.value = error instanceof Error ? error.message : "加载最近会话失败";
   } finally {
-    isLoadingThreads.value = false;
+    if (requestVersion === historyRequestVersion.value) {
+      isLoadingThreads.value = false;
+    }
+  }
+}
+
+async function loadMoreRecentThreads(): Promise<void> {
+  if (isLoadingThreads.value || !hasMoreThreads.value) {
+    return;
+  }
+
+  const requestVersion = historyRequestVersion.value;
+  isLoadingThreads.value = true;
+  threadError.value = "";
+  try {
+    const result = await listRecentChats(historyPage.value + 1, historyPageSize);
+    if (requestVersion !== historyRequestVersion.value) {
+      return;
+    }
+    const existingThreadIds = new Set(
+      recentThreads.value.map((thread) => thread.thread_id),
+    );
+    recentThreads.value = [
+      ...recentThreads.value,
+      ...result.items.filter((thread) => !existingThreadIds.has(thread.thread_id)),
+    ];
+    historyPage.value = result.page;
+    hasMoreThreads.value = result.has_more;
+  } catch (error) {
+    if (requestVersion !== historyRequestVersion.value) {
+      return;
+    }
+    threadError.value = error instanceof Error ? error.message : "加载更多会话失败";
+  } finally {
+    if (requestVersion === historyRequestVersion.value) {
+      isLoadingThreads.value = false;
+    }
   }
 }
 
@@ -181,6 +241,36 @@ function toggleSkill(skillId: string): void {
 
 function removeSkill(skillId: string): void {
   selectedSkillIds.value = selectedSkillIds.value.filter((item) => item !== skillId);
+}
+
+function selectPermission(level: PermissionLevel): void {
+  permissionLevel.value = level;
+  isPermissionPickerOpen.value = false;
+}
+
+function confirmToolApproval(approval: ToolApprovalRequest): Promise<boolean> {
+  progressText.value = `等待审批：${approval.toolName}`;
+  const args = JSON.stringify(approval.toolArgs, null, 2);
+  return new Promise((resolve) => {
+    Modal.confirm({
+      title: `高权限工具审批 · ${approval.toolName}`,
+      content: h("div", { class: "tool-approval-confirm" }, [
+        h("p", approval.description),
+        h("strong", "工具参数"),
+        h("pre", args.slice(0, 4000)),
+      ]),
+      okText: "允许执行",
+      cancelText: "拒绝",
+      centered: true,
+      maskClosable: false,
+      onOk() {
+        resolve(true);
+      },
+      onCancel() {
+        resolve(false);
+      },
+    });
+  });
 }
 
 async function loadThread(threadId: ThreadId): Promise<void> {
@@ -404,6 +494,9 @@ async function sendMessage(): Promise<void> {
       startTaskPolling(assistantMessage, task);
       void scrollToBottom();
     },
+    onApproval(approval) {
+      return confirmToolApproval(approval);
+    },
     onProgress(progress) {
       progressText.value = progress.node
         ? `${progress.node} · ${progress.detail}`
@@ -442,7 +535,7 @@ async function sendMessage(): Promise<void> {
         void refreshTaskResultHistory(pendingThreadId);
       }
     },
-  }, selectedSkills.value.map((skill) => skill.name));
+  }, selectedSkills.value.map((skill) => skill.name), permissionLevel.value);
 }
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -458,6 +551,7 @@ function handleKeydown(event: KeyboardEvent): void {
       :active-view="activeView"
       :current-thread-id="currentThreadId"
       :is-loading-threads="isLoadingThreads"
+      :has-more-threads="hasMoreThreads"
       :is-streaming="isStreaming"
       :progress-text="progressText"
       :api-url="getLangGraphApiUrl()"
@@ -467,6 +561,7 @@ function handleKeydown(event: KeyboardEvent): void {
       @navigate="navigateView"
       @load-thread="loadThread"
       @refresh-history="refreshRecentThreads"
+      @load-more-history="loadMoreRecentThreads"
     />
 
     <section v-if="activeView === 'chat'" class="chat-workspace" aria-label="问答聊天区">
@@ -614,6 +709,39 @@ function handleKeydown(event: KeyboardEvent): void {
             </div>
           </div>
           <div class="send-actions">
+            <div class="permission-picker">
+              <button
+                class="skill-trigger permission-trigger"
+                type="button"
+                :class="{ active: isPermissionPickerOpen || permissionLevel === 'high' }"
+                :disabled="isStreaming"
+                @click="isPermissionPickerOpen = !isPermissionPickerOpen"
+              >
+                <Shield :size="16" />
+                {{ permissionLabel }}
+                <ChevronDown :size="15" />
+              </button>
+              <div v-if="isPermissionPickerOpen" class="permission-popover">
+                <button
+                  class="permission-option"
+                  :class="{ selected: permissionLevel === 'low' }"
+                  type="button"
+                  @click="selectPermission('low')"
+                >
+                  <strong>需要审批</strong>
+                  <small>高权限工具执行前需要确认</small>
+                </button>
+                <button
+                  class="permission-option"
+                  :class="{ selected: permissionLevel === 'high' }"
+                  type="button"
+                  @click="selectPermission('high')"
+                >
+                  <strong>完全访问权限</strong>
+                  <small>允许直接执行所有工具</small>
+                </button>
+              </div>
+            </div>
             <button
               v-if="isStreaming"
               class="send-button stop"

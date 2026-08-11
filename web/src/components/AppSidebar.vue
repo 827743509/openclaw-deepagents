@@ -2,6 +2,7 @@
 import {
   Database,
   History,
+  LoaderCircle,
   MessageSquarePlus,
   RotateCcw,
   Sparkles,
@@ -15,6 +16,7 @@ defineProps<{
   activeView: SidebarView;
   currentThreadId: ThreadId | null;
   isLoadingThreads: boolean;
+  hasMoreThreads: boolean;
   isStreaming: boolean;
   progressText: string;
   apiUrl: string;
@@ -27,6 +29,7 @@ const emit = defineEmits<{
   navigate: [view: SidebarView];
   loadThread: [threadId: ThreadId];
   refreshHistory: [];
+  loadMoreHistory: [];
 }>();
 
 function openNewChat(): void {
@@ -44,6 +47,14 @@ function formatThreadTime(value: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function handleHistoryScroll(event: Event): void {
+  const element = event.currentTarget as HTMLElement;
+  const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+  if (distanceToBottom <= 32) {
+    emit("loadMoreHistory");
+  }
 }
 </script>
 
@@ -103,7 +114,7 @@ function formatThreadTime(value: number): string {
           <RotateCcw :size="16" />
         </button>
       </div>
-      <div class="history-list">
+      <div class="history-list" @scroll.passive="handleHistoryScroll">
         <button
           v-for="thread in recentThreads"
           :key="thread.thread_id"
@@ -120,6 +131,16 @@ function formatThreadTime(value: number): string {
           </span>
         </button>
         <p v-if="!isLoadingThreads && !recentThreads.length" class="history-empty">暂无历史会话</p>
+        <p v-if="isLoadingThreads && recentThreads.length" class="history-loading">
+          <LoaderCircle :size="15" />
+          加载更多会话
+        </p>
+        <p
+          v-else-if="!hasMoreThreads && recentThreads.length"
+          class="history-page-end"
+        >
+          已加载全部会话
+        </p>
         <p v-if="threadError" class="inline-error">{{ threadError }}</p>
       </div>
     </section>

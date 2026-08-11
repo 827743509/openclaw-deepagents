@@ -4,6 +4,7 @@ from pathlib import Path
 
 from deepagents import  create_deep_agent, AsyncSubAgent
 from deepagents.backends.filesystem import FilesystemBackend
+from langchain.agents.middleware import ToolCallLimitMiddleware
 
 from ssw.config import SSW_AGENT_PROTOCOL_URL, SSW_WORKSPACE
 from ssw.llm import build_llm
@@ -39,6 +40,7 @@ agent = create_deep_agent(
     model=build_llm(),
     tools=[validate_select_sql],
     system_prompt=SYSTEM_PROMPT,
+    middleware=[ToolCallLimitMiddleware(run_limit=10)],
     skills=[str(SKILLS_PATH)],
     backend=FilesystemBackend(root_dir=str(workspace), virtual_mode=True),
     name="text-to-sql-agent",

@@ -2,14 +2,21 @@ from __future__ import annotations
 
 from typing import Literal
 
+from langchain.agents.middleware.human_in_the_loop import Decision
 from pydantic import BaseModel, Field
 
 
 class ChatStreamRequest(BaseModel):
     thread_id: str | None = None
     question: str = Field(min_length=1)
-    context: str | None = None
     skills: list[str] | None = None
+    permissions: Literal["low", "high"] = "low"
+
+
+class ChatResumeRequest(BaseModel):
+    decisions: dict[str, Decision]
+    skills: list[str] | None = None
+    permissions: Literal["low", "high"] = "low"
 
 
 class ChatTaskStatus(BaseModel):
@@ -35,3 +42,10 @@ class ChatSummary(BaseModel):
     message_count: int
     last_message: ChatMessage | None = None
     updated_at: float
+
+
+class ChatSummaryPage(BaseModel):
+    items: list[ChatSummary] = Field(default_factory=list)
+    page: int
+    page_size: int
+    has_more: bool

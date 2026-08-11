@@ -217,7 +217,25 @@ h2 {
   gap: 8px;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 2px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 6px;
+}
+
+.history-loading,
+.history-page-end {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 9px 4px;
+  color: #6a7894;
+  font-size: 0.74rem;
+}
+
+.history-loading svg {
+  animation: spin 0.9s linear infinite;
 }
 
 .history-item {
@@ -1048,6 +1066,93 @@ h2 {
 
 .send-actions {
   flex: 0 0 auto;
+  gap: 8px;
+}
+
+.permission-picker {
+  position: relative;
+}
+
+.permission-trigger {
+  min-height: 42px;
+}
+
+.permission-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.permission-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 12;
+  display: grid;
+  width: 260px;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid rgba(126, 143, 178, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 48px rgba(94, 111, 148, 0.24);
+}
+
+.permission-option {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px;
+  border-radius: 8px;
+  color: #354157;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.permission-option:hover,
+.permission-option.selected {
+  background: rgba(244, 251, 255, 0.96);
+}
+
+.permission-option strong {
+  font-size: 0.84rem;
+}
+
+.permission-option small {
+  color: #6a7894;
+  font-size: 0.74rem;
+}
+
+.tool-approval-confirm {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.tool-approval-confirm p {
+  margin: 0;
+  color: #354157;
+  line-height: 1.6;
+}
+
+.tool-approval-confirm strong {
+  color: #53627f;
+  font-size: 0.82rem;
+}
+
+.tool-approval-confirm pre {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  color: #243047;
+  background: #f5f7fb;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .send-button {
@@ -1164,6 +1269,22 @@ h2 {
     width: 100%;
   }
 
+  .send-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .permission-trigger {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .permission-popover {
+    right: auto;
+    left: 0;
+    width: min(100%, 300px);
+  }
+
   .mcp-dialog-backdrop {
     align-items: end;
     padding: 0;
@@ -1192,6 +1313,9 @@ h2 {
 }
 .app-menu {
   gap: 14px;
+  height: calc(100vh - 44px);
+  min-height: 0;
+  overflow: hidden;
   padding: 16px 12px;
   background: rgba(255, 255, 255, 0.82);
 }
@@ -1284,6 +1408,10 @@ h2 {
 }
 
 .menu-history {
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
   margin-top: 4px;
 }
 
@@ -1428,6 +1556,13 @@ h2 {
     position: sticky;
     top: 0;
     z-index: 20;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .menu-history {
+    max-height: 420px;
   }
 
   .manager-page {

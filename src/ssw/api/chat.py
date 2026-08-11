@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from ssw.dependency import get_chat_service
 from ssw.schemas.chat import (
     ChatHistory,
+    ChatResumeRequest,
     ChatStreamRequest,
-    ChatSummary,
+    ChatSummaryPage,
     ChatTaskStatus,
 )
 from ssw.service.chat import ChatService
@@ -18,12 +19,13 @@ routerChat = APIRouter(prefix="/chat", tags=["对话"])
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
 
 
-@routerChat.get("", response_model=list[ChatSummary])
+@routerChat.get("", response_model=ChatSummaryPage)
 async def list_recent_chats(
     service: ChatServiceDep,
-    limit: int = 10,
-) -> list[ChatSummary]:
-    return await service.list_recent(limit)
+    page: int = Query(default=1, ge=1, le=10_000),
+    page_size: int = Query(default=10, ge=1, le=50),
+) -> ChatSummaryPage:
+    return await service.list_recent(page, page_size)
 
 
 @routerChat.post("/stream")
@@ -36,6 +38,19 @@ async def stream_chat_answer(
         result.stream,
         media_type="text/event-stream; charset=utf-8",
         headers={"X-Thread-Id": result.thread_id},
+    )
+
+
+@routerChat.post("/{thread_id}/resume")
+async def resume_chat_answer(
+    thread_id: str,
+    request: ChatResumeRequest,
+    service: ChatServiceDep,
+) -> StreamingResponse:
+    return StreamingResponse(
+        service.stream_resume(thread_id, request),
+        media_type="text/event-stream; charset=utf-8",
+        headers={"X-Thread-Id": thread_id},
     )
 
 

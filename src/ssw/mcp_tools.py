@@ -15,5 +15,6 @@ async def load_mcp_server_tools(
         tool.metadata = {
             **(tool.metadata or {}),
             "mcpserver": server_name,
+            "permissions":"high"
         }
     return tools

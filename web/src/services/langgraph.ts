@@ -14,6 +14,16 @@ export type StreamProgress = {
   detail: string;
 };
 
+export type PermissionLevel = "low" | "high";
+
+export type ToolApprovalRequest = {
+  interruptId: string;
+  toolCallId: string;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  description: string;
+};
+
 export type AsyncTaskStatus = {
   task_id: string;
   status: string;
@@ -24,6 +34,7 @@ export type AsyncTaskStatus = {
 export type StreamCallbacks = {
   onThreadId?: (threadId: ThreadId) => void;
   onAsyncTask?: (task: AsyncTaskStatus) => void;
+  onApproval: (approval: ToolApprovalRequest) => boolean | Promise<boolean>;
   onToolCall: (toolCall: ToolCallProgress) => void;
   onProgress: (progress: StreamProgress) => void;
   onFinal: (content: string) => void;
@@ -47,6 +58,13 @@ export type ChatSummary = {
   message_count: number;
   last_message: ChatHistoryMessage | null;
   updated_at: number;
+};
+
+export type ChatSummaryPage = {
+  items: ChatSummary[];
+  page: number;
+  page_size: number;
+  has_more: boolean;
 };
 
 export type SkillSummary = {
@@ -241,12 +259,56 @@ function iterAsyncTasks(chunk: unknown): AsyncTaskStatus[] {
   return [...tasks.values()];
 }
 
+function iterToolApprovals(chunk: unknown): ToolApprovalRequest[] {
+  const chunkRecord = asRecord(chunk);
+  const payload = chunkRecord && "data" in chunkRecord ? chunkRecord.data : chunk;
+  const payloadRecord = asRecord(payload);
+  if (!payloadRecord) {
+    return [];
+  }
+
+  const candidates = [payloadRecord, ...Object.values(payloadRecord)
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => Boolean(item))];
+  const approvals = new Map<string, ToolApprovalRequest>();
+  for (const candidate of candidates) {
+    const interrupts = candidate.__interrupt__;
+    if (!Array.isArray(interrupts)) {
+      continue;
+    }
+    for (const rawInterrupt of interrupts) {
+      const interruptRecord = asRecord(rawInterrupt);
+      const value = asRecord(interruptRecord?.value);
+      const interruptId = interruptRecord?.id;
+      if (value?.type !== "tool_approval" || typeof interruptId !== "string") {
+        continue;
+      }
+      const toolName = value.tool_name;
+      const toolCallId = value.tool_call_id;
+      if (typeof toolName !== "string" || typeof toolCallId !== "string") {
+        continue;
+      }
+      approvals.set(interruptId, {
+        interruptId,
+        toolCallId,
+        toolName,
+        toolArgs: asRecord(value.tool_args) ?? {},
+        description: typeof value.description === "string"
+          ? value.description
+          : `工具 ${toolName} 请求高权限操作`,
+      });
+    }
+  }
+  return [...approvals.values()];
+}
+
 export async function streamChatAnswer(
   threadId: ThreadId | null,
   question: string,
   signal: AbortSignal,
   callbacks: StreamCallbacks,
   skills: string[] = [],
+  permissions: PermissionLevel = "low",
 ): Promise<void> {
   const seenToolCalls = new Set<string>();
   const finishedToolCalls = new Set<string>();
@@ -306,50 +368,93 @@ export async function streamChatAnswer(
 
   try {
     callbacks.onProgress({ detail: "模型正在处理" });
+    let activeThreadId = threadId;
+    let nextRequest: { url: string; body: Record<string, unknown> } | null = {
+      url: `${apiUrl}/chat/stream`,
+      body: { thread_id: threadId, question, skills, permissions },
+    };
 
-    const response = await fetch(`${apiUrl}/chat/stream`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ thread_id: threadId, question, skills }),
-      signal,
-    });
-
-    if (!response.ok || !response.body) {
-      const detail = await response.text();
-      throw new Error(detail || `流式请求失败：${response.status}`);
-    }
-
-    const responseThreadId = response.headers.get("X-Thread-Id");
-    if (responseThreadId) {
-      callbacks.onThreadId?.(responseThreadId);
-    }
-
-    for await (const chunk of readEventStream(response.body)) {
-      if (signal.aborted) {
-        break;
+    while (nextRequest) {
+      const currentRequest = nextRequest;
+      nextRequest = null;
+      const response = await fetch(currentRequest.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(currentRequest.body),
+        signal,
+      });
+      if (!response.ok || !response.body) {
+        const detail = await response.text();
+        throw new Error(detail || `流式请求失败：${response.status}`);
       }
 
-      const event = asRecord(chunk)?.event;
-      const eventName = typeof event === "string" ? event : "";
-
-      if (eventName.includes("messages")) {
-        const tuple = unpackMessageTuple(chunk);
-        if (tuple) {
-          inspectMessage(tuple.message, extractNode(tuple.metadata));
+      const responseThreadId = response.headers.get("X-Thread-Id");
+      if (responseThreadId) {
+        const threadChanged = responseThreadId !== activeThreadId;
+        activeThreadId = responseThreadId;
+        if (threadChanged) {
+          callbacks.onThreadId?.(responseThreadId);
         }
+      }
+
+      const roundApprovals = new Map<string, ToolApprovalRequest>();
+      for await (const chunk of readEventStream(response.body)) {
+        if (signal.aborted) {
+          break;
+        }
+
+        const event = asRecord(chunk)?.event;
+        const eventName = typeof event === "string" ? event : "";
+        if (eventName.includes("error")) {
+          const payload = asRecord(asRecord(chunk)?.data);
+          throw new Error(typeof payload?.detail === "string" ? payload.detail : "流式请求失败");
+        }
+        if (eventName.includes("messages")) {
+          const tuple = unpackMessageTuple(chunk);
+          if (tuple) {
+            inspectMessage(tuple.message, extractNode(tuple.metadata));
+          }
+          continue;
+        }
+        if (eventName.includes("updates")) {
+          for (const approval of iterToolApprovals(chunk)) {
+            roundApprovals.set(approval.interruptId, approval);
+          }
+          for (const task of iterAsyncTasks(chunk)) {
+            callbacks.onAsyncTask?.(task);
+          }
+          for (const { node, message } of iterUpdateMessages(chunk)) {
+            inspectMessage(message, node, true);
+          }
+        }
+      }
+
+      if (signal.aborted || !roundApprovals.size) {
         continue;
       }
-
-      if (eventName.includes("updates")) {
-        for (const task of iterAsyncTasks(chunk)) {
-          callbacks.onAsyncTask?.(task);
-        }
-        for (const { node, message } of iterUpdateMessages(chunk)) {
-          inspectMessage(message, node, true);
-        }
+      if (!activeThreadId) {
+        throw new Error("缺少会话 ID，无法继续审批后的任务");
       }
+
+      callbacks.onProgress({ detail: "等待高权限工具审批" });
+      const decisions: Record<
+        string,
+        { type: "approve" } | { type: "reject"; message: string }
+      > = {};
+      for (const approval of roundApprovals.values()) {
+        const approved = await callbacks.onApproval(approval);
+        decisions[approval.interruptId] = approved
+          ? { type: "approve" }
+          : {
+              type: "reject",
+              message: `用户拒绝执行高权限工具 ${approval.toolName}`,
+            };
+      }
+      callbacks.onProgress({ detail: "审批完成，正在继续执行" });
+      nextRequest = {
+        url: `${apiUrl}/chat/${encodeURIComponent(activeThreadId)}/resume`,
+        body: { decisions, skills, permissions },
+      };
     }
 
     callbacks.onFinal(finalText);
@@ -392,13 +497,20 @@ export async function getAsyncTaskStatus(
   return (await response.json()) as AsyncTaskStatus;
 }
 
-export async function listRecentChats(limit = 10): Promise<ChatSummary[]> {
-  const response = await fetch(`${apiUrl}/chat?limit=${limit}`);
+export async function listRecentChats(
+  page = 1,
+  pageSize = 10,
+): Promise<ChatSummaryPage> {
+  const query = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  const response = await fetch(`${apiUrl}/chat?${query.toString()}`);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(detail || `加载最近会话失败：${response.status}`);
   }
-  return (await response.json()) as ChatSummary[];
+  return (await response.json()) as ChatSummaryPage;
 }
 
 export async function listSkills(): Promise<SkillSummary[]> {
