@@ -8,7 +8,8 @@ export type McpApplyResult = {
   tool_count: number;
 };
 
-const apiUrl = import.meta.env.VITE_SSW_API_URL || "http://127.0.0.1:8000";
+const apiUrl = import.meta.env.VITE_SSW_API_URL
+  || (import.meta.env.DEV ? "http://127.0.0.1:8000" : "");
 
 async function readError(response: Response, fallback: string): Promise<Error> {
   try {

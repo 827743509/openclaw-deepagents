@@ -15,7 +15,6 @@ from ssw.llm import build_llm
 routerDataBase = APIRouter(prefix="/database", tags=["数据库管理"])
 workspace = Path(SSW_WORKSPACE).resolve()
 DataSourceType = Literal["mysql", "clickhouse"]
-REPO_ROOT = Path(__file__).resolve().parents[3]
 SKILLS_ROOT = workspace / "skills" / "text_to_sql"
 
 
@@ -179,7 +178,7 @@ def _read_datasource(skill_file: Path, include_body: bool = False) -> DataSource
 
     datasource_type = "clickhouse" if metadata.get("database_type", "").lower() == "clickhouse" else "mysql"
     try:
-        skill_path = str(skill_file.relative_to(REPO_ROOT))
+        skill_path = str(skill_file.relative_to(workspace))
     except ValueError:
         skill_path = str(skill_file)
 

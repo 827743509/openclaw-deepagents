@@ -1,10 +1,11 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+build-backend = "build_backend"
+backend-path = ["."]
 
 [project]
 name = "ssw-agent"
-version = "0.1.0"
+version = "0.1.5"
 description = "OpenClaw-like personal AI assistant MVP built with LangChain Deep Agents"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -23,13 +24,27 @@ dependencies = [
   "tavily-python>=0.5.0",
   "langgraph-cli[inmem]>=0.4.25",
   "langgraph-checkpoint-redis>=0.4.1",
-  "claude-agent-sdk>=0.2.87",
   "fastapi>=0.136.3",
   "pymysql>=1.1.1",
   "clickhouse-connect>=0.10.0",
   "langgraph-checkpoint-sqlite>=3.1.0",
-  "llama-index-core>=0.14.23",
 ]
+
+[project.scripts]
+ssw-agent = "ssw.start_web:main"
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ssw = [
+  "default_workspace/*",
+  "default_workspace/**/*",
+  ".env.dev",
+  "langgraph.json",
+  "static/*",
+  "static/**/*",
+]

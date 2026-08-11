@@ -51,7 +51,7 @@ text_to_sql_subagent:AsyncSubAgent=AsyncSubAgent(
     description="""
     专门负责将用户的数据查询需求转换为可执行的 SQL 查询语句。
 
-    当用户需要从数据库中查询、统计、分析数据时调用此 Agent。
+    当用户需要从数据库中查询、统计、分析数据时调用此 Agent。每个库对应一个skill文件,使用时必须明确查询哪个库。
     输入通常是自然语言描述的数据需求，例如：
     - 根据条件筛选数据
     - 分组统计、聚合分析

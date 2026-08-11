@@ -1,5 +1,6 @@
 .venv/
 .env
+!.env.dev
 .idea
 .checkpoint/
 data/memories
@@ -16,3 +17,8 @@ web/node_modules/
 web/dist/
 src/ssw_agent.egg-info
 src/ssw/subagents/text_to_sql/skills
+/build/
+/dist/
+*.egg-info/
+/src/ssw/static/
+skills/text_to_sql

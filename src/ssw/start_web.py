@@ -5,6 +5,7 @@ import io
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -12,19 +13,59 @@ from pathlib import Path
 
 import uvicorn
 
-src_dir = Path(__file__).resolve().parents[1]
-if str(src_dir) not in sys.path:
-    sys.path.insert(0, str(src_dir))
-
 from ssw.config import (
     SSW_AGENT_PROTOCOL_HOST,
     SSW_AGENT_PROTOCOL_PORT,
     SSW_WEB_HOST,
     SSW_WEB_PORT,
+    SSW_WORKSPACE,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKSPACE = Path(SSW_WORKSPACE).resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LANGGRAPH_CONFIG_PATH = PROJECT_ROOT / "langgraph.json"
+PACKAGE_DEFAULT_WORKSPACE = PROJECT_ROOT
 WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+AGENT_PROTOCOL_STARTUP_TIMEOUT_SECONDS = 30.0
+
+
+def _copy_missing_files(source_dir: Path, target_dir: Path) -> bool:
+    copied = False
+    for source_path in source_dir.rglob("*"):
+        relative_path = source_path.relative_to(source_dir)
+        target_path = target_dir / relative_path
+        if source_path.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            continue
+        if target_path.exists():
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        copied = True
+    return copied
+
+
+def _initialize_workspace() -> None:
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    (WORKSPACE / "skills" / "main").mkdir(parents=True, exist_ok=True)
+    (WORKSPACE / "skills" / "text_to_sql").mkdir(parents=True, exist_ok=True)
+
+    copied = False
+    default_mcp_config = PACKAGE_DEFAULT_WORKSPACE / "mcp.json"
+    target_mcp_config = WORKSPACE / "mcp.json"
+    if default_mcp_config.is_file() and not target_mcp_config.exists():
+        shutil.copy2(default_mcp_config, target_mcp_config)
+        copied = True
+
+    default_main_skills = PACKAGE_DEFAULT_WORKSPACE / "skills" / "main"
+    if default_main_skills.is_dir():
+        copied = _copy_missing_files(
+            default_main_skills,
+            WORKSPACE / "skills" / "main",
+        ) or copied
+
+    if copied:
+        print("已初始化默认 MCP 配置和主 Agent skills", flush=True)
 
 
 def _list_windows_listening_process_ids(port: int) -> set[int]:
@@ -262,15 +303,21 @@ def stop_process_on_port(port: int) -> None:
 
 
 def start_agent_protocol_process() -> subprocess.Popen[str]:
+    if not LANGGRAPH_CONFIG_PATH.is_file():
+        raise RuntimeError(f"缺少 LangGraph 配置文件：{LANGGRAPH_CONFIG_PATH}")
+
     executable = "langgraph.exe" if sys.platform == "win32" else "langgraph"
     command = [
         executable,
         "dev",
+        "--config",
+        str(LANGGRAPH_CONFIG_PATH),
         "--host",
         SSW_AGENT_PROTOCOL_HOST,
         "--port",
         str(SSW_AGENT_PROTOCOL_PORT),
         "--no-browser",
+        "--no-reload",
     ]
 
     env = os.environ.copy()
@@ -278,6 +325,7 @@ def start_agent_protocol_process() -> subprocess.Popen[str]:
         f"http://{SSW_AGENT_PROTOCOL_HOST}:"
         f"{SSW_AGENT_PROTOCOL_PORT}"
     )
+    env["SSW_WORKSPACE"] = str(WORKSPACE)
     env["SSW_AGENT_PROTOCOL_URL"] = agent_protocol_url
     os.environ["SSW_AGENT_PROTOCOL_URL"] = agent_protocol_url
 
@@ -298,17 +346,50 @@ def start_agent_protocol_process() -> subprocess.Popen[str]:
     if sys.platform == "win32":
         return subprocess.Popen(
             command,
-            cwd=REPO_ROOT,
+            cwd=PROJECT_ROOT,
             env=env,
             text=True,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
     return subprocess.Popen(
         command,
-        cwd=REPO_ROOT,
+        cwd=PROJECT_ROOT,
         env=env,
         text=True,
         start_new_session=True,
+    )
+
+
+def wait_for_agent_protocol_process(
+    process: subprocess.Popen[str],
+    timeout_seconds: float = AGENT_PROTOCOL_STARTUP_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        return_code = process.poll()
+        if return_code is not None:
+            raise RuntimeError(
+                "Agent Protocol Server 启动失败，"
+                f"子进程退出码：{return_code}，请检查上方 LangGraph 日志。"
+            )
+
+        try:
+            with socket.create_connection(
+                (SSW_AGENT_PROTOCOL_HOST, SSW_AGENT_PROTOCOL_PORT),
+                timeout=0.5,
+            ):
+                print(
+                    "Agent Protocol Server 已就绪："
+                    f"http://{SSW_AGENT_PROTOCOL_HOST}:{SSW_AGENT_PROTOCOL_PORT}",
+                    flush=True,
+                )
+                return
+        except OSError:
+            time.sleep(0.1)
+
+    raise RuntimeError(
+        "Agent Protocol Server 启动超时："
+        f"{timeout_seconds:g} 秒内未监听端口 {SSW_AGENT_PROTOCOL_PORT}。"
     )
 
 
@@ -349,10 +430,14 @@ def stop_agent_protocol_process(process: subprocess.Popen[str]) -> None:
 
 
 def main() -> None:
+    print(f"正在使用 SSW 工作目录：{WORKSPACE}", flush=True)
+    _initialize_workspace()
+
     stop_process_on_port(SSW_AGENT_PROTOCOL_PORT)
     agent_protocol_process = start_agent_protocol_process()
 
     try:
+        wait_for_agent_protocol_process(agent_protocol_process)
         print(
             f"正在启动 FastAPI 服务：http://{SSW_WEB_HOST}:{SSW_WEB_PORT}",
             flush=True,

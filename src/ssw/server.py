@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-src_dir = Path(__file__).resolve().parents[1]
-if str(src_dir) not in sys.path:
-    sys.path.insert(0, str(src_dir))
 
 from ssw.api.database import routerDataBase
 from ssw.api.chat import routerChat
@@ -57,3 +53,7 @@ app.include_router(routerChat)
 app.include_router(routerDataBase)
 app.include_router(routerMcp)
 app.include_router(routerSkills)
+
+static_dir = Path(__file__).resolve().parent / "static"
+if static_dir.joinpath("index.html").is_file():
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="web")

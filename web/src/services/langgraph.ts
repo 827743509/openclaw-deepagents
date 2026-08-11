@@ -76,7 +76,8 @@ export type SkillSummary = {
   metadata: Record<string, unknown>;
 };
 
-const apiUrl = import.meta.env.VITE_SSW_API_URL || "http://127.0.0.1:8000";
+const apiUrl = import.meta.env.VITE_SSW_API_URL
+  || (import.meta.env.DEV ? "http://127.0.0.1:8000" : "");
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;

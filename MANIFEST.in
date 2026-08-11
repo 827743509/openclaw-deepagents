@@ -1,0 +1,18 @@
+include build_backend.py
+include .env.dev
+include langgraph.build.json
+include langgraph.json
+include mcp.json
+include src/ssw/langgraph.json
+include src/ssw/.env.dev
+recursive-include skills/main *
+recursive-include src/ssw/default_workspace *
+include web/index.html
+include web/package.json
+include web/package-lock.json
+include web/tsconfig.json
+include web/vite.config.ts
+recursive-include web/src *
+recursive-include src/ssw/static *
+prune web/node_modules
+prune web/dist
