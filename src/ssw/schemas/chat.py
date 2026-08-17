@@ -8,14 +8,19 @@ from pydantic import BaseModel, Field
 
 class ChatStreamRequest(BaseModel):
     thread_id: str | None = None
+    first_stream: bool  = False
+    last_stream: bool | None = None
+    user_id: str | None = None
     question: str = Field(min_length=1)
     skills: list[str] | None = None
+    mcp_list: list[str] | None = None
     permissions: Literal["low", "high"] = "low"
 
 
 class ChatResumeRequest(BaseModel):
     decisions: dict[str, Decision]
     skills: list[str] | None = None
+    mcp_list: list[str] | None = None
     permissions: Literal["low", "high"] = "low"
 
 

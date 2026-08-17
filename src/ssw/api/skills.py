@@ -4,7 +4,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import FileResponse
+from starlette.requests import Request
 
+from ssw.core.RateLimit import rate_limit
 from ssw.dependency import get_skill_service
 from ssw.schemas.skills import SkillCreate, SkillSummary, SkillUpdate
 from ssw.service.skills import SkillService
@@ -14,7 +16,7 @@ SkillServiceDep = Annotated[SkillService, Depends(get_skill_service)]
 
 
 @routerSkills.get("", response_model=list[SkillSummary])
-async def list_skills(service: SkillServiceDep) -> list[SkillSummary]:
+async def list_skills(http_request: Request,service: SkillServiceDep) -> list[SkillSummary]:
     return await service.list_skills()
 
 

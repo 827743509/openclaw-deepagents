@@ -3,5 +3,8 @@
   "graphs": {
     "text_to_sql": "src/ssw/subagents/text_to_sql/agent.py:agent"
   },
+  "checkpointer": {
+    "backend": "mongo"
+  },
   "env": ".env"
 }

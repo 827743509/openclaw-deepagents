@@ -6,7 +6,9 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
-from ssw.config import SSW_WORKSPACE
+from ssw.config import AGENT_NAME, SSW_WORKSPACE
+from ssw.core.MongodbClient import async_mongo_client
+from ssw.repository.chat import ChatRepository
 from ssw.repository.mcp import McpRepository
 from ssw.repository.skills import SkillRepository
 from ssw.service.chat import ChatService
@@ -18,6 +20,18 @@ def get_chat_service(request: Request) -> ChatService:
     return ChatService(
         agent=request.app.state.agent,
         checkpointer=request.app.state.checkpointer,
+        repository=get_chat_repository(),
+        user_id=request.state.user_id,
+        agent_name=AGENT_NAME,
+    )
+
+
+@lru_cache
+def get_chat_repository() -> ChatRepository:
+    database = async_mongo_client["langgraph"]
+    return ChatRepository(
+        conversation_collection=database["agent_conversations"],
+        checkpoint_collection=database["checkpoints"],
     )
 
 

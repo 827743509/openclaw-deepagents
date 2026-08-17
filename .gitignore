@@ -16,3 +16,5 @@ web/node_modules/
 web/dist/
 src/ssw_agent.egg-info
 src/ssw/subagents/text_to_sql/skills
+skills/text_to_sql
+src/ssw/static

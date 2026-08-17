@@ -19,6 +19,7 @@ class McpService:
     def __init__(self, repository: McpRepository) -> None:
         self.repository = repository
         self._apply_lock = asyncio.Lock()
+        self._tool_count = 0
 
     async def get_config(self) -> McpConfig:
         try:
@@ -28,17 +29,28 @@ class McpService:
 
     async def load_current_tools(self) -> list[Any]:
         config = await asyncio.to_thread(self.repository.get)
-        return await self._load_tools(config)
+        tools = await self._load_tools(config)
+        self._tool_count = len(tools)
+        return tools
 
     async def apply_config(
         self,
         config: McpConfig,
         checkpointer: Any,
-    ) -> tuple[McpApplyResult, Any]:
+        store: Any,
+    ) -> tuple[McpApplyResult, Any | None]:
         async with self._apply_lock:
             try:
-                tools = await self._load_tools(config)
-                agent = create_chat_agent(checkpointer, tools)
+                current_config = await asyncio.to_thread(self.repository.get)
+                current_server_names = set(current_config.mcp_servers)
+                next_server_names = set(config.mcp_servers)
+                should_rebuild_agent = current_server_names != next_server_names
+
+                agent = None
+                if should_rebuild_agent:
+                    tools = await self._load_tools(config)
+                    agent = create_chat_agent(checkpointer, store, tools)
+                    self._tool_count = len(tools)
                 saved_config = await asyncio.to_thread(self.repository.save, config)
             except HTTPException:
                 raise
@@ -54,7 +66,7 @@ class McpService:
                 McpApplyResult(
                     config=saved_config,
                     loaded_servers=loaded_servers,
-                    tool_count=len(tools),
+                    tool_count=self._tool_count,
                 ),
                 agent,
             )
@@ -64,8 +76,6 @@ class McpService:
         tool_sources: dict[str, str] = {}
 
         for server_name, server in config.mcp_servers.items():
-            if not server.is_enabled:
-                continue
             connection = self._resolve_environment_values(server.to_connection())
             try:
                 server_tools = await load_mcp_server_tools(server_name, connection)

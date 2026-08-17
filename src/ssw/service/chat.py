@@ -13,6 +13,7 @@ from langgraph.types import Command
 from langgraph_sdk import get_client
 
 from ssw.config import SSW_AGENT_PROTOCOL_URL
+from ssw.repository.chat import ChatRepository
 from ssw.schemas.chat import (
     ChatHistory,
     ChatMessage,
@@ -31,20 +32,41 @@ class ChatStreamResult:
 
 
 class ChatService:
-    def __init__(self, agent: Any, checkpointer: Any) -> None:
+    def __init__(
+        self,
+        agent: Any,
+        checkpointer: Any,
+        repository: ChatRepository,
+        user_id: str,
+        agent_name: str,
+    ) -> None:
         self.agent = agent
         self.checkpointer = checkpointer
+        self.repository = repository
+        self.user_id = user_id
+        self.agent_name = agent_name
 
     async def create_stream(self, request: ChatStreamRequest) -> ChatStreamResult:
         question = request.question.strip()
         if not question:
             raise HTTPException(status_code=400, detail="问题不能为空")
 
-        thread_id = request.thread_id or uuid.uuid4().hex
+
+        first_stream: bool = False if request.thread_id else True
+        if first_stream:
+            request.thread_id = uuid.uuid4().hex
+            request.first_stream=first_stream
+            await self.repository.create(
+                thread_id=request.thread_id,
+                user_id=self.user_id,
+                agent_name=self.agent_name,
+                question=question,
+            )
+
 
         return ChatStreamResult(
-            thread_id=thread_id,
-            stream=self.stream_answer(thread_id, request),
+            thread_id=request.thread_id,
+            stream=self.stream_answer(request.thread_id, request),
         )
 
     async def list_recent(
@@ -54,35 +76,23 @@ class ChatService:
     ) -> ChatSummaryPage:
         normalized_page = max(page, 1)
         normalized_page_size = min(max(page_size, 1), 50)
-        offset = (normalized_page - 1) * normalized_page_size
-        seen_thread_ids: set[str] = set()
-        page_checkpoints: list[tuple[str, Any]] = []
-        has_more = False
-
-        async for checkpoint in self.checkpointer.alist(None):
-            thread_id = self._extract_thread_id(getattr(checkpoint, "config", None))
-            if not thread_id or thread_id in seen_thread_ids:
-                continue
-
-            seen_thread_ids.add(thread_id)
-            thread_index = len(seen_thread_ids) - 1
-            if thread_index < offset:
-                continue
-            if len(page_checkpoints) >= normalized_page_size:
-                has_more = True
-                break
-            page_checkpoints.append((thread_id, checkpoint))
+        conversations, has_more = await self.repository.list_recent(
+            user_id=self.user_id,
+            agent_name=self.agent_name,
+            page=normalized_page,
+            page_size=normalized_page_size,
+        )
 
         summaries: list[ChatSummary] = []
-        for thread_id, checkpoint in page_checkpoints:
-            messages = await self._get_thread_messages(thread_id)
+        for conversation in conversations:
+            messages = await self._get_thread_messages(conversation.thread_id)
             summaries.append(
                 ChatSummary(
-                    thread_id=thread_id,
-                    title=self._extract_thread_title(messages),
+                    thread_id=conversation.thread_id,
+                    title=conversation.question or self._extract_thread_title(messages),
                     message_count=len(messages),
                     last_message=messages[-1] if messages else None,
-                    updated_at=self._extract_checkpoint_timestamp(checkpoint),
+                    updated_at=conversation.updated_at,
                 )
             )
         return ChatSummaryPage(
@@ -107,17 +117,28 @@ class ChatService:
 
     async def delete_chat(self, thread_id: str) -> dict[str, bool]:
         await self.checkpointer.adelete_thread(thread_id)
-        return {"deleted": True}
+        deleted = await self.repository.delete(
+            thread_id=thread_id,
+            user_id=self.user_id,
+            agent_name=self.agent_name,
+        )
+        return {"deleted": deleted}
 
     async def stream_answer(self, thread_id: str, request: ChatStreamRequest) -> AsyncIterator[bytes]:
         content = request.question.strip()
-
+        check_point_loop:bool=True
         async for event in self._stream_agent(
             thread_id,
             {"messages": [{"role": "user", "content": content}]},
             request.skills,
             request.permissions,
+            request.mcp_list,
         ):
+            if check_point_loop and request.first_stream:
+                checkpoint_exists = await self.repository.checkpoint_exists(thread_id)
+                if checkpoint_exists:
+                    await self.repository.mark_available(thread_id)
+                    check_point_loop = False
             yield event
 
     async def stream_resume(
@@ -130,6 +151,7 @@ class ChatService:
             Command(resume=request.decisions),
             request.skills,
             request.permissions,
+            request.mcp_list,
         ):
             yield event
 
@@ -139,6 +161,7 @@ class ChatService:
         agent_input: Any,
         skills: list[str] | None,
         permissions: str,
+        mcp_list: list[str] | None
     ) -> AsyncIterator[bytes]:
         try:
             historical_message_ids = await self._get_existing_message_ids(thread_id)
@@ -148,6 +171,8 @@ class ChatService:
                 context={
                     "request_skills": skills or [],
                     "permissions": permissions,
+                    "user_id":self.user_id,
+                    "mcp_list":mcp_list
                 },
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
@@ -353,28 +378,6 @@ class ChatService:
                 content = content.rsplit("\n\n用户问题：", maxsplit=1)[-1].strip()
             return content or "新会话"
         return "新会话"
-
-    @staticmethod
-    def _extract_thread_id(config: Any) -> str:
-        if not isinstance(config, dict):
-            return ""
-        configurable = config.get("configurable")
-        if not isinstance(configurable, dict):
-            return ""
-        thread_id = configurable.get("thread_id")
-        return thread_id if isinstance(thread_id, str) else ""
-
-    @staticmethod
-    def _extract_checkpoint_timestamp(checkpoint: Any) -> float:
-        raw_checkpoint = getattr(checkpoint, "checkpoint", None)
-        if isinstance(raw_checkpoint, dict):
-            timestamp = raw_checkpoint.get("ts")
-            if isinstance(timestamp, str):
-                try:
-                    return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
-                except ValueError:
-                    pass
-        return 0.0
 
     async def get_task_status(
         self,

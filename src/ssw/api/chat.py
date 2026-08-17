@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query,Request
 from fastapi.responses import StreamingResponse
 
+from ssw.core.RateLimit import rate_limit
 from ssw.dependency import get_chat_service
 from ssw.schemas.chat import (
     ChatHistory,
@@ -29,10 +30,13 @@ async def list_recent_chats(
 
 
 @routerChat.post("/stream")
+@rate_limit(5)
 async def stream_chat_answer(
+    http_request: Request,
     request: ChatStreamRequest,
     service: ChatServiceDep,
 ) -> StreamingResponse:
+    request.user_id = request.user_id or http_request.state.user_id
     result = await service.create_stream(request)
     return StreamingResponse(
         result.stream,

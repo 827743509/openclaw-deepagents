@@ -1,5 +1,23 @@
 # SSW Agent
 
+## Docker Compose 部署
+
+先根据 `.env.example` 创建 `.env`，并填写模型密钥等必要配置，然后构建并启动全部服务：
+
+```powershell
+docker compose up -d --build
+```
+
+默认访问地址：
+
+- 前端：`http://localhost:9001`
+- 后端 API：`http://localhost:8000`
+- Agent Protocol：`http://localhost:2024`
+- Redis：`localhost:6379`
+- MongoDB：`localhost:27017`
+
+首次启动时，`mongo-init` 会自动初始化 MongoDB 副本集。前端通过 Nginx 的 `/api` 路径代理后端，并已关闭 SSE 响应缓冲。
+
 这是一个基于 LangGraph/Deep Agents 的个人 AI assistant 项目。
 
 ## 安装使用

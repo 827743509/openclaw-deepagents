@@ -38,6 +38,8 @@ async def update_mcp_config(
     result, agent = await service.apply_config(
         config,
         request.app.state.checkpointer,
+        request.app.state.store
     )
-    request.app.state.agent = agent
+    if agent is not None:
+        request.app.state.agent = agent
     return result
