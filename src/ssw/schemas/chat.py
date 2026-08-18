@@ -11,12 +11,14 @@ class ChatStreamRequest(BaseModel):
     question: str = Field(min_length=1)
     skills: list[str] | None = None
     permissions: Literal["low", "high"] = "low"
+    mcp_list: list[str] | None = None
 
 
 class ChatResumeRequest(BaseModel):
     decisions: dict[str, Decision]
     skills: list[str] | None = None
     permissions: Literal["low", "high"] = "low"
+    mcp_list: list[str] | None = None
 
 
 class ChatTaskStatus(BaseModel):

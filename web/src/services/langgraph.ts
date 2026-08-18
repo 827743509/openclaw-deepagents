@@ -1,3 +1,5 @@
+import { getEnabledMcpServerNames } from "./mcp";
+
 export type ThreadId = string;
 
 export type ToolCallStatus = "running" | "done" | "error";
@@ -369,10 +371,11 @@ export async function streamChatAnswer(
 
   try {
     callbacks.onProgress({ detail: "模型正在处理" });
+    const mcpList = await getEnabledMcpServerNames();
     let activeThreadId = threadId;
     let nextRequest: { url: string; body: Record<string, unknown> } | null = {
       url: `${apiUrl}/chat/stream`,
-      body: { thread_id: threadId, question, skills, permissions },
+      body: { thread_id: threadId, question, skills, permissions, mcp_list: mcpList },
     };
 
     while (nextRequest) {
@@ -454,7 +457,7 @@ export async function streamChatAnswer(
       callbacks.onProgress({ detail: "审批完成，正在继续执行" });
       nextRequest = {
         url: `${apiUrl}/chat/${encodeURIComponent(activeThreadId)}/resume`,
-        body: { decisions, skills, permissions },
+        body: { decisions, skills, permissions, mcp_list: mcpList },
       };
     }
 

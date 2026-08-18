@@ -5,10 +5,11 @@ import io
 import os
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import uvicorn
@@ -73,6 +74,7 @@ def _list_windows_listening_process_ids(port: int) -> set[int]:
         ["netstat.exe", "-ano", "-p", "tcp"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         errors="replace",
         timeout=10,
         check=False,
@@ -114,6 +116,7 @@ def _list_descendant_process_ids(parent_process_ids: set[int]) -> set[int]:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         errors="replace",
         timeout=10,
         check=False,
@@ -164,6 +167,7 @@ def _stop_windows_process_on_port(port: int) -> None:
             ["taskkill.exe", "/PID", str(process_id), "/T", "/F"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=10,
             check=False,
@@ -196,6 +200,7 @@ def _list_macos_listening_process_ids(port: int) -> set[int]:
         [lsof_command, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         errors="replace",
         timeout=10,
         check=False,
@@ -212,6 +217,7 @@ def _list_linux_listening_process_ids(port: int) -> set[int]:
             [fuser_command, "-n", "tcp", str(port)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=10,
             check=False,
@@ -226,6 +232,7 @@ def _list_linux_listening_process_ids(port: int) -> set[int]:
             [lsof_command, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=10,
             check=False,
@@ -365,31 +372,47 @@ def wait_for_agent_protocol_process(
     timeout_seconds: float = AGENT_PROTOCOL_STARTUP_TIMEOUT_SECONDS,
 ) -> None:
     deadline = time.monotonic() + timeout_seconds
+
+    health_url = (
+        f"http://{SSW_AGENT_PROTOCOL_HOST}:"
+        f"{SSW_AGENT_PROTOCOL_PORT}/ok"
+    )
+
     while time.monotonic() < deadline:
         return_code = process.poll()
+
         if return_code is not None:
             raise RuntimeError(
                 "Agent Protocol Server 启动失败，"
-                f"子进程退出码：{return_code}，请检查上方 LangGraph 日志。"
+                f"子进程退出码：{return_code}，"
+                "请检查上方 LangGraph 日志。"
             )
 
         try:
-            with socket.create_connection(
-                (SSW_AGENT_PROTOCOL_HOST, SSW_AGENT_PROTOCOL_PORT),
-                timeout=0.5,
-            ):
-                print(
-                    "Agent Protocol Server 已就绪："
-                    f"http://{SSW_AGENT_PROTOCOL_HOST}:{SSW_AGENT_PROTOCOL_PORT}",
-                    flush=True,
-                )
-                return
-        except OSError:
-            time.sleep(0.1)
+            with urllib.request.urlopen(
+                health_url,
+                timeout=1.0,
+            ) as response:
+                if response.status == 200:
+                    print(
+                        "Agent Protocol Server 已就绪："
+                        f"http://{SSW_AGENT_PROTOCOL_HOST}:"
+                        f"{SSW_AGENT_PROTOCOL_PORT}",
+                        flush=True,
+                    )
+                    return
+
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+        ):
+            time.sleep(0.2)
 
     raise RuntimeError(
         "Agent Protocol Server 启动超时："
-        f"{timeout_seconds:g} 秒内未监听端口 {SSW_AGENT_PROTOCOL_PORT}。"
+        f"{timeout_seconds:g} 秒内健康检查未通过："
+        f"{health_url}"
     )
 
 
@@ -403,6 +426,7 @@ def stop_agent_protocol_process(process: subprocess.Popen[str]) -> None:
             ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=10,
             check=False,

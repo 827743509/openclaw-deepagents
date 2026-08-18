@@ -184,19 +184,33 @@ def _record_digest(content: bytes) -> str:
     return f"sha256={encoded}"
 
 
+def _replace_exact_source_line(
+    content: str,
+    source_line: str,
+    target_line: str,
+) -> str:
+    lines = content.splitlines(keepends=True)
+    matching_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if line.rstrip("\r\n") == source_line
+    ]
+    if len(matching_indexes) != 1:
+        raise RuntimeError(
+            "wheel 中的 start_web.py 不符合预期，"
+            f"运行资源路径匹配数量为 {len(matching_indexes)}：{source_line}"
+        )
+
+    matching_index = matching_indexes[0]
+    original_line = lines[matching_index]
+    line_ending = original_line[len(original_line.rstrip("\r\n")) :]
+    lines[matching_index] = f"{target_line}{line_ending}"
+    return "".join(lines)
+
+
 def _rewrite_wheel_runtime_paths(wheel_path: Path) -> None:
     temporary_wheel_path = wheel_path.with_name(f".{wheel_path.name}.tmp")
     start_web_name = "ssw/start_web.py"
-    source_root_block = (
-        'PROJECT_ROOT = Path(__file__).resolve().parents[2]\n'
-        'LANGGRAPH_CONFIG_PATH = PROJECT_ROOT / "langgraph.json"\n'
-        'PACKAGE_DEFAULT_WORKSPACE = PROJECT_ROOT\n'
-    )
-    package_root_block = (
-        'PROJECT_ROOT = Path(__file__).resolve().parent\n'
-        'LANGGRAPH_CONFIG_PATH = PROJECT_ROOT / "langgraph.json"\n'
-        'PACKAGE_DEFAULT_WORKSPACE = PROJECT_ROOT / "default_workspace"\n'
-    )
 
     try:
         with zipfile.ZipFile(wheel_path, "r") as source_wheel:
@@ -210,13 +224,17 @@ def _rewrite_wheel_runtime_paths(wheel_path: Path) -> None:
         if start_web_content is None:
             raise RuntimeError(f"wheel 中缺少运行入口：{start_web_name}")
         start_web_text = start_web_content.decode("utf-8")
-        if source_root_block not in start_web_text:
-            raise RuntimeError("wheel 中的 start_web.py 不符合预期，无法转换运行资源路径")
-        entries[start_web_name] = start_web_text.replace(
-            source_root_block,
-            package_root_block,
-            1,
-        ).encode("utf-8")
+        start_web_text = _replace_exact_source_line(
+            start_web_text,
+            "PROJECT_ROOT = Path(__file__).resolve().parents[2]",
+            "PROJECT_ROOT = Path(__file__).resolve().parent",
+        )
+        start_web_text = _replace_exact_source_line(
+            start_web_text,
+            "PACKAGE_DEFAULT_WORKSPACE = PROJECT_ROOT",
+            'PACKAGE_DEFAULT_WORKSPACE = PROJECT_ROOT / "default_workspace"',
+        )
+        entries[start_web_name] = start_web_text.encode("utf-8")
 
         record_names = [name for name in entries if name.endswith(".dist-info/RECORD")]
         if len(record_names) != 1:

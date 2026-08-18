@@ -49,6 +49,13 @@ export async function getMcpConfig(): Promise<McpConfig> {
   return (await response.json()) as McpConfig;
 }
 
+export async function getEnabledMcpServerNames(): Promise<string[]> {
+  const config = await getMcpConfig();
+  return Object.entries(config.mcpServers)
+    .filter(([, server]) => server.disabled !== true && server.enabled !== false)
+    .map(([name]) => name);
+}
+
 export async function updateMcpConfig(config: McpConfig): Promise<McpApplyResult> {
   const response = await fetch(`${apiUrl}/mcp/config`, {
     method: "PUT",

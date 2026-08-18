@@ -117,6 +117,7 @@ class ChatService:
             {"messages": [{"role": "user", "content": content}]},
             request.skills,
             request.permissions,
+            request.mcp_list,
         ):
             yield event
 
@@ -130,6 +131,7 @@ class ChatService:
             Command(resume=request.decisions),
             request.skills,
             request.permissions,
+            request.mcp_list,
         ):
             yield event
 
@@ -139,6 +141,7 @@ class ChatService:
         agent_input: Any,
         skills: list[str] | None,
         permissions: str,
+        mcp_list: list[str] | None,
     ) -> AsyncIterator[bytes]:
         try:
             historical_message_ids = await self._get_existing_message_ids(thread_id)
@@ -148,6 +151,8 @@ class ChatService:
                 context={
                     "request_skills": skills or [],
                     "permissions": permissions,
+                    "mcp_list": mcp_list,
+
                 },
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
