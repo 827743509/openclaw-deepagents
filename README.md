@@ -9,6 +9,13 @@
 ```powershell
 pip install ssw-agent
 ```
+首次启动前可以手动创建 `.ssw/.env` 并填写模型配置：或者直接配置以下下个系统环境变量
+
+```dotenv
+SSW_API_KEY=你的模型密钥
+SSW_BASE_URL=https://api.deepseek.com
+SSW_MODEL=deepseek-chat
+```
 
 安装后直接启动：
 
@@ -34,13 +41,7 @@ python -m ssw.start_web
 缺失文件，不会覆盖用户已经修改的配置或技能。Text-to-SQL 数据源 skills
 可能包含数据库连接凭据，因此不会作为默认资源发布。
 
-首次启动前可以手动创建 `.ssw/.env` 并填写模型配置：
 
-```dotenv
-SSW_API_KEY=你的模型密钥
-SSW_BASE_URL=https://api.deepseek.com
-SSW_MODEL=deepseek-chat
-```
 
 也可以通过系统环境变量 `SSW_WORKSPACE` 指定其他目录：
 
