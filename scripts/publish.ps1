@@ -220,7 +220,6 @@ with zipfile.ZipFile(sys.argv[1]) as wheel:
 
     if (-not $Upload) {
         Write-Host "未指定 -Upload，已跳过上传。" -ForegroundColor Yellow
-        Write-Host "上传到 TestPyPI：.\scripts\publish.ps1 -Upload"
         Write-Host "上传到正式 PyPI：.\scripts\publish.ps1 -Upload -Repository pypi"
         return
     }

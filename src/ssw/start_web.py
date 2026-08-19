@@ -332,6 +332,7 @@ def start_agent_protocol_process() -> subprocess.Popen[str]:
         f"http://{SSW_AGENT_PROTOCOL_HOST}:"
         f"{SSW_AGENT_PROTOCOL_PORT}"
     )
+    env["PYTHONUTF8"] = "1"
     env["SSW_WORKSPACE"] = str(WORKSPACE)
     env["SSW_AGENT_PROTOCOL_URL"] = agent_protocol_url
     os.environ["SSW_AGENT_PROTOCOL_URL"] = agent_protocol_url
@@ -391,7 +392,7 @@ def wait_for_agent_protocol_process(
         try:
             with urllib.request.urlopen(
                 health_url,
-                timeout=1.0,
+                timeout=3.0,
             ) as response:
                 if response.status == 200:
                     print(
