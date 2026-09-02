@@ -36,4 +36,44 @@ SSW_AGENT_PROTOCOL_URL = os.getenv(
 )
 
 
-LS_MONGODB_URI=os.getenv("LS_MONGODB_URI","mongodb://root:123456@localhost:27017/langgraph?authSource=admin&replicaSet=rs0")
+LS_MONGODB_URI = os.getenv("LS_MONGODB_URI","mongodb://root:123456@localhost:27017/langgraph?authSource=admin&replicaSet=rs0")
+DATABASE_URL = os.getenv("DATABASE_URL","postgresql+asyncpg://rag:rag@localhost:5432/rag_kb")
+
+# ===== Embedding =====
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY")
+EMBEDDING_BASE_URL = os.getenv(
+    "EMBEDDING_BASE_URL",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
+EMBEDDING_DIM = _get_int_env("EMBEDDING_DIM", 1024)
+
+EMBEDDING_BATCH_SIZE = _get_int_env("EMBEDDING_BATCH_SIZE", 10)
+
+# ===== 文档上传与切分 =====
+UPLOAD_MAX_SIZE_MB = _get_int_env("UPLOAD_MAX_SIZE_MB", 50)
+CHUNK_SIZE = _get_int_env("CHUNK_SIZE", 600)
+CHUNK_OVERLAP = _get_int_env("CHUNK_OVERLAP", 60)
+
+# ===== minio =====
+OSS_ORIGINS=os.getenv("OSS_ORIGINS","http://localhost:9000")
+OSS_ACCESS_KEY=os.getenv("OSS_ACCESS_KEY","VRDCTCVBTVDLX0YJJHM3")
+OSS_SECRET_KEY=os.getenv("OSS_SECRET_KEY","YotSomHBA5E2zPuqeqXVb65GyHWzRWEUw44aZ+Wc")
+OSS_BUCKET=os.getenv("OSS_BUCKET","ssw-bucket")
+
+
+CELERY_BROKER_URL=os.getenv("redis://localhost:6379/1")
+CELERY_RESULT_BACKEND=os.getenv("CELERY_RESULT_BACKEND","redis://localhost:6379/2")
+
+
+
+
+
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://localhost:9000",
+    ).split(",")
+    if origin.strip()
+]

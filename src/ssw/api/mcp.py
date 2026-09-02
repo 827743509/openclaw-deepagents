@@ -4,12 +4,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
-from ssw.dependency import get_mcp_service
+from ssw.dependency import get_mcp_service, McpServiceDep
 from ssw.schemas.mcp import McpApplyResult, McpConfig
 from ssw.service.mcp import McpService
 
 routerMcp = APIRouter(prefix="/mcp", tags=["MCP 配置"])
-McpServiceDep = Annotated[McpService, Depends(get_mcp_service)]
+
 
 
 @routerMcp.get(

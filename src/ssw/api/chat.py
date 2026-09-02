@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query,Request
 from fastapi.responses import StreamingResponse
 
 from ssw.core.RateLimit import rate_limit
-from ssw.dependency import get_chat_service
+from ssw.dependency import get_chat_service, ChatServiceDep
 from ssw.schemas.chat import (
     ChatHistory,
     ChatResumeRequest,
@@ -17,7 +17,7 @@ from ssw.schemas.chat import (
 from ssw.service.chat import ChatService
 
 routerChat = APIRouter(prefix="/chat", tags=["对话"])
-ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
+
 
 
 @routerChat.get("", response_model=ChatSummaryPage)

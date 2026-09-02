@@ -7,12 +7,12 @@ from fastapi.responses import FileResponse
 from starlette.requests import Request
 
 from ssw.core.RateLimit import rate_limit
-from ssw.dependency import get_skill_service
+from ssw.dependency import get_skill_service, SkillServiceDep
 from ssw.schemas.skills import SkillCreate, SkillSummary, SkillUpdate
 from ssw.service.skills import SkillService
 
 routerSkills = APIRouter(prefix="/skills", tags=["技能管理"])
-SkillServiceDep = Annotated[SkillService, Depends(get_skill_service)]
+
 
 
 @routerSkills.get("", response_model=list[SkillSummary])

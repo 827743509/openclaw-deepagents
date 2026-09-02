@@ -11,7 +11,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.store.redis import RedisStore
 
-from ssw.config import AGENT_NAME, REDIS_URL
+from ssw.api.documents import documents_router
+from ssw.config import AGENT_NAME, REDIS_URL, CORS_ORIGINS
 from ssw.core.AuthenticationMiddleware import AuthenticationMiddleware
 from ssw.core.MongodbClient import mongo_client, async_mongo_client
 
@@ -25,7 +26,7 @@ from ssw.api.mcp import routerMcp
 from ssw.api.skills import routerSkills
 from ssw.agent import create_chat_agent
 
-from ssw.dependency import get_mcp_service
+from ssw.dependency import get_mcp_repository, get_mcp_service
 
 scheduler = AsyncIOScheduler()
 
@@ -100,7 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         checkpointer = MongoDBSaver(mongo_client, db_name="langgraph")
         app.state.checkpointer = checkpointer
-        mcp_service = get_mcp_service()
+        mcp_service = get_mcp_service(get_mcp_repository())
 
         with RedisStore.from_conn_string(REDIS_URL) as redis_store:
             redis_store.setup()
@@ -121,7 +122,7 @@ app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -129,6 +130,7 @@ app.add_middleware(
 )
 app.add_middleware(AuthenticationMiddleware)
 app.include_router(routerChat)
+app.include_router(documents_router)
 app.include_router(routerDataBase)
 app.include_router(routerMcp)
 app.include_router(routerSkills)
